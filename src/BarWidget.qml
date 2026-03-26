@@ -81,8 +81,8 @@ Item {
 
     Component.onCompleted: root.refreshFromBridge(Date.now())
 
-    implicitWidth: barRow.implicitWidth + (padding * 2)
-    implicitHeight: barBackground.height
+    implicitWidth: 240
+    implicitHeight: Math.max(summaryColumn.implicitHeight, openPanelButton.height) + (padding * 2)
 
     readonly property int padding: 10
     readonly property color backgroundColor: "#16181d"
