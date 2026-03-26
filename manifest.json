@@ -1,9 +1,22 @@
 {
-  "id": "com.ivan.time-tracker",
+  "id": "time-tracker",
   "name": "Time Tracker",
   "version": "0.1.0",
-  "main": "src/Main.qml",
-  "barWidget": "src/BarWidget.qml",
-  "panel": "src/Panel.qml",
-  "settings": "src/Settings.qml"
+  "minNoctaliaVersion": "3.6.0",
+  "author": "Ivan Tolkunov",
+  "license": "UNLICENSED",
+  "repository": "https://github.com/ivan-tolkunov/time-tracker-noctalia",
+  "description": "Time tracker plugin for Noctalia",
+  "entryPoints": {
+    "main": "src/Main.qml",
+    "barWidget": "src/BarWidget.qml",
+    "panel": "src/Panel.qml",
+    "settings": "src/Settings.qml"
+  },
+  "dependencies": {
+    "plugins": []
+  },
+  "metadata": {
+    "defaultSettings": {}
+  }
 }
