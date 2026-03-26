@@ -1,0 +1,9 @@
+{
+  "id": "com.ivan.time-tracker",
+  "name": "Time Tracker",
+  "version": "0.1.0",
+  "main": "src/Main.qml",
+  "barWidget": "src/BarWidget.qml",
+  "panel": "src/Panel.qml",
+  "settings": "src/Settings.qml"
+}

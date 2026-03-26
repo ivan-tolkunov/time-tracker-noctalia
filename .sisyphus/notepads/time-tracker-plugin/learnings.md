@@ -1,0 +1,27 @@
+- M1 scaffold uses `manifest.json` entrypoints: `main`, `barWidget`, `panel`, and `settings`, mapped to `src/Main.qml`, `src/BarWidget.qml`, `src/Panel.qml`, and `src/Settings.qml`.
+- TypeScript test harness is intentionally minimal: Vitest + strict TypeScript with starter tests under `tests/domain` and `tests/integration`.
+- Baseline source/test directories for future milestones are in place: `src/domain`, `src/utils`, `tests/domain`, and `tests/integration`.
+- M2 domain logic now lives in focused pure modules: `timer-engine`, `workday`, `deadline-rules`, `recurring-rules`, `weekly-average`, and `alert-dedupe`, with shared interfaces in `src/types.ts`.
+- Workday/day-week calculations use UTC logical boundaries via `boundaryMinuteOfDay` and `weekStartsOn`, and interval splitting at boundaries is covered by tests.
+- Timer transitions are modeled as pure state transforms that enforce one active timer globally and close prior sessions on task switch.
+- Recurring target evaluation clips to the current logical period (daily/weekly), guaranteeing reset-per-period behavior with no carry-over.
+- Weekly average math is defined as total tracked minutes since task creation divided by all logical weeks from creation week through current week (including partial current week).
+- Alert dedupe uses a stable `taskId::eventType::periodKey` key so notification emission stays one-time per task/event/period tuple.
+- Workday boundary math now uses local wall-clock date fields (`getFullYear`/`getMonth`/`getDate`/`getDay`) and local boundary construction, aligning logical-day/week behavior with product semantics instead of UTC calendar extraction.
+- Logical next-day/week boundaries are now computed by local calendar day shifting (`shiftLogicalDayStartMs`) rather than fixed millisecond durations, which keeps period windows aligned to wall-clock boundaries.
+- Recurring rules now expose both current-period progress and `evaluateMostRecentlyClosedRecurringPeriod(...)` so downstream alert logic can detect one-time missed closed periods with stable period keys.
+- M3 persistence now normalizes untrusted settings payloads into a strict `PersistedPluginState` shape (`tasks`, `sessions`, `activeTimer`, `alertRecords`, `preferences`) and drops malformed/duplicate records safely.
+- Runtime orchestration is centered in a TypeScript `PluginRuntime` store (`src/runtime/plugin-runtime.ts`) with selectors/actions for list/start/stop/switch/complete/delete-safe flows plus today-time, weekly average, overdue state, and recurring status.
+- Startup recovery works by restoring `activeTimer` directly into runtime state and treating it as an open session; tracked-time selectors include this recovered active interval without needing synthetic backfill sessions.
+- Periodic hooks are now explicit runtime APIs: `runPeriodicRefresh(...)` for derived snapshots and `runAlertCheck(...)` for deduplicated deadline-overdue / recurring-missed emission using existing domain semantics.
+- Deadline-overdue alert dedupe now keys by deadline event identity (`deadline:<dueAtMs>`) instead of logical day key, preventing repeat alerts on later days for the same overdue deadline while still allowing a new alert if the deadline changes.
+- `PluginRuntime` now exposes typed panel-ready CRUD actions `createTask(...)` and `updateTask(...)` with normalized title handling, validation for deadline/recurring fields, and explicit result reasons for wiring predictable UI error states in M4.
+- M4 UI wiring now runs through a thin `PluginUiBridge` (`src/runtime/ui-bridge.ts`) that derives bar/panel snapshots from `PluginRuntime` and forwards CRUD/timer actions without duplicating domain logic.
+- M4 integration coverage lives in `tests/integration/ui-runtime-bridge.test.ts`, which validates bar rendering data, panel action flows, and shared bar/panel snapshot sync in TypeScript because full QML execution is not available here.
+- `BarWidget.qml` and `Panel.qml` now consume a `uiBridge` + `snapshot` contract directly: each surface refreshes from `runPeriodicRefresh(...)` / `getSnapshot()`, and panel draft submission routes through bridge draft helpers rather than QML-side business rules.
+- M5 settings wiring now lives on the same `PluginUiBridge`: `getSettingsState()` exposes current preferences for QML, and `updateSettingsFromDraft(...)` parses/validates `HH:MM` workday boundaries plus second-based refresh/alert inputs before updating runtime preferences.
+- `Main.qml` now re-syncs its timer intervals from bridge preferences during startup/refresh/alert cycles, so saved settings for refresh and alert cadence can affect the live runtime without moving interval logic into QML.
+- Completed tasks are now treated as terminal for recurring evaluation in domain helpers (`evaluateRecurringProgress`, `evaluateMostRecentlyClosedRecurringPeriod`), which keeps completed recurring tasks from surfacing ongoing recurring progress semantics.
+- Runtime alert checks now explicitly skip recurring evaluation for completed tasks, preventing `recurring-missed` emissions after a task has been completed.
+- Persisted `activeTimer.startMs` is now clamped to `[0, nowMs]` during normalization so malformed negative values cannot inflate elapsed time after recovery.
+- Final-wave UI wiring evidence is now source-local in the QML entrypoints: `BarWidget.qml`, `Panel.qml`, and `Settings.qml` each resolve their default bridge through `pluginApi.mainInstance.runtimeBridge`, while still allowing explicit bridge prop overrides when needed.

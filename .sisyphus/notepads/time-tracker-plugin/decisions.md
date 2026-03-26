@@ -1,0 +1,15 @@
+- v1 bar shows only the active task title and today's tracked time for that active task.
+- Panel supports create/edit/delete/start/stop/switch/complete and weekly average per task.
+- Only one active timer may exist at a time.
+- Recurring targets reset each new period with no carry-over.
+- Weekly average divides total tracked minutes by all logical weeks since task creation, including the current partial week.
+- Alerts are one-time Noctalia toast notifications only.
+- Persisted plugin state contract for M3 is versioned and explicit: `{ version, tasks, sessions, activeTimer, alertRecords, preferences }`, with runtime preferences carrying workday/week settings plus refresh and alert-check intervals.
+- `Main.qml` stays a thin orchestration surface for M3 (startup recovery + periodic refresh/alert timer triggers), while business logic remains in TypeScript runtime modules to keep M4 UI wiring straightforward.
+- M4 keeps QML surfaces QtQuick-only and intentionally simple; presentation components expose properties/signals while `PluginUiBridge` owns derived labels and runtime action forwarding for bar/panel state.
+- M4 panel-open and draft-submit flows are now explicit bridge contract methods (`requestPanelOpen`, `createTaskFromDraft`, `updateTaskFromDraft`) so the real QML entrypoints use the same typed wiring path covered by integration tests.
+- M5 keeps the settings page on that same thin-QML pattern: `Settings.qml` only edits raw text/int fields while `PluginUiBridge` owns preference formatting, parsing, and validation.
+- Refresh and alert intervals are edited in seconds on the settings surface even though runtime stores milliseconds, because the scoped v1 defaults are 30s/60s and second-based entry avoids awkward fractional-minute inputs.
+- Recurring semantics are terminal once `completedAtMs` exists: completed tasks do not expose recurring progress state and are excluded from recurring-missed alert evaluation.
+- Recovery sanitization for persisted active timers clamps `startMs` to a non-negative value and at most `nowMs` to avoid nonsensical recovered elapsed durations from malformed state.
+- Final-wave F3 evidence stays narrow: instead of adding new runtime behavior, the repo now proves the shared Noctalia entrypoint contract with identical QML bridge resolvers plus a Vitest source-contract test that inspects the three QML entrypoints via raw imports.

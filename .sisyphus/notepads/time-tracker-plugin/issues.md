@@ -1,0 +1,10 @@
+- LSP diagnostics are available for TS/JSON after adding local `typescript-language-server` and `@biomejs/biome` dependencies.
+- QML diagnostics are currently unavailable in this environment because no `.qml` LSP server is configured.
+- TypeScript rejects `as const` on computed expressions (e.g., `4 * 60 as const`), so boundary options in tests should use plain numeric literals or literal object fields.
+- Comment/docstring hook enforces comment minimization; inline explanatory comments in tests were removed to keep the suite compliant.
+- Existing scaffold export test had a UTC-timestamp expectation; after switching to local logical-day semantics it needed local wall-clock input to avoid timezone-dependent false failures.
+- QML remains untyped in this environment, so `Main.qml` orchestration wiring (startup/refresh/alert timers via `runtimeBridge`) is validated by code review and runtime-module tests rather than QML LSP diagnostics.
+- Strict TypeScript with optional object fields means `Task["deadline"]` and `Task["recurring"]` include `undefined`; runtime mutation helpers should use `NonNullable<...>` for input/output contracts to avoid false `possibly undefined` diagnostics in validated branches.
+- M4 still cannot use QML LSP in this environment, so BarWidget/Panel verification depends on straightforward QtQuick code plus `PluginUiBridge` integration tests instead of executable QML assertions.
+- QML-to-bridge wiring is safest when QML only forwards raw draft strings/ints and the TypeScript bridge performs deadline/recurring normalization, because QML runtime validation is limited here.
+- M5 settings verification still cannot rely on QML execution/LSP in this environment, so correctness for boundary/week-start/interval editing is covered through `PluginUiBridge` and runtime tests instead of executable QML assertions.

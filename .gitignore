@@ -1,0 +1,11 @@
+node_modules/
+
+# test/build caches
+.vite/
+coverage/
+dist/
+*.tsbuildinfo
+
+# local environment noise
+.DS_Store
+*.log
