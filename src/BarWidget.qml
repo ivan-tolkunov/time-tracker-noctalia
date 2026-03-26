@@ -1,8 +1,14 @@
 import QtQuick 2.15
+import QtQuick.Effects
+import qs.Commons
 
 Item {
     id: root
 
+    property var pluginApi: null
+    property var screen: null
+    property string widgetId: ""
+    property string section: ""
     property var uiBridge: null
     property var runtimeBridge: null
     property var snapshot: ({
@@ -10,6 +16,8 @@ Item {
             "hasActiveTask": false,
             "activeTaskId": null,
             "activeTaskTitle": "No active task",
+            "activeElapsedMinutes": 0,
+            "activeElapsedLabel": "0m",
             "todayTrackedMinutes": 0,
             "todayTrackedLabel": "0m today"
         },
@@ -22,8 +30,6 @@ Item {
             "tasks": []
         }
     })
-
-    signal panelOpenRequested()
 
     function syncSnapshot(nextSnapshot) {
         if (nextSnapshot) {
@@ -41,16 +47,28 @@ Item {
 
     function getRuntimeBridge() {
         var mainInstance = root.getPluginMainInstance()
-        if (root.runtimeBridge) {
-            return root.runtimeBridge
-        }
 
-        if (root.uiBridge) {
-            return root.uiBridge
+        if (mainInstance && mainInstance.getSnapshot && mainInstance.runPeriodicRefresh) {
+            return mainInstance
         }
 
         if (mainInstance && mainInstance.runtimeBridge) {
             return mainInstance.runtimeBridge
+        }
+
+        if (mainInstance && mainInstance.ensureSharedRuntimeBridge) {
+            var ensuredBridge = mainInstance.ensureSharedRuntimeBridge()
+            if (ensuredBridge) {
+                return ensuredBridge
+            }
+        }
+
+        if (root.runtimeBridge) {
+            return root.runtimeBridge
+        }
+
+        if (root.uiBridge && root.uiBridge.getSnapshot && root.uiBridge.runPeriodicRefresh) {
+            return root.uiBridge
         }
 
         return null
@@ -59,8 +77,11 @@ Item {
     function refreshFromBridge(nowMs) {
         var bridge = root.getRuntimeBridge()
         if (bridge && bridge.runPeriodicRefresh) {
-            root.syncSnapshot(bridge.runPeriodicRefresh(nowMs))
-            return root.snapshot
+            bridge.runPeriodicRefresh(nowMs)
+            if (bridge.getSnapshot) {
+                root.syncSnapshot(bridge.getSnapshot())
+                return root.snapshot
+            }
         }
 
         if (bridge && bridge.getSnapshot) {
@@ -70,87 +91,146 @@ Item {
         return root.snapshot
     }
 
-    function requestOpenPanel(nowMs) {
-        var bridge = root.getRuntimeBridge()
-        if (bridge && bridge.requestPanelOpen) {
-            bridge.requestPanelOpen(nowMs)
+    function openPanel() {
+        if (root.pluginApi && root.screen && root.pluginApi.openPanel) {
+            root.pluginApi.openPanel(root.screen, root)
+        }
+    }
+
+    function getFallbackActiveTaskFromSettings(nowMs) {
+        if (!root.pluginApi || !root.pluginApi.pluginSettings || !root.pluginApi.pluginSettings.trackerState) {
+            return null
         }
 
-        root.panelOpenRequested()
+        var trackerState = root.pluginApi.pluginSettings.trackerState
+        var activeTimer = trackerState.activeTimer
+        if (!activeTimer || !activeTimer.taskId || !Number.isFinite(activeTimer.startMs)) {
+            return null
+        }
+
+        var tasks = Array.isArray(trackerState.tasks) ? trackerState.tasks : []
+        var title = "Active task"
+        for (var index = 0; index < tasks.length; index += 1) {
+            var task = tasks[index]
+            if (task && task.id === activeTimer.taskId && task.title) {
+                title = String(task.title)
+                break
+            }
+        }
+
+        var elapsedMinutes = Math.max(0, Math.floor((nowMs - activeTimer.startMs) / 60000))
+        var elapsedLabel = elapsedMinutes < 60
+            ? (String(elapsedMinutes) + "m")
+            : (String(Math.floor(elapsedMinutes / 60)) + "h " + String(elapsedMinutes % 60) + "m")
+
+        return {
+            "title": title,
+            "elapsedLabel": elapsedLabel
+        }
     }
+
+    onRuntimeBridgeChanged: root.refreshFromBridge(Date.now())
+    onUiBridgeChanged: root.refreshFromBridge(Date.now())
 
     Component.onCompleted: root.refreshFromBridge(Date.now())
 
-    implicitWidth: 240
-    implicitHeight: Math.max(summaryColumn.implicitHeight, openPanelButton.height) + (padding * 2)
+    implicitWidth: root.contentWidth
+    implicitHeight: root.contentHeight
 
-    readonly property int padding: 10
-    readonly property color backgroundColor: "#16181d"
-    readonly property color borderColor: "#2f343d"
-    readonly property color titleColor: "#f4f6fb"
-    readonly property color mutedColor: "#a8b0bf"
-    readonly property color accentColor: "#5aa9ff"
+    readonly property string screenName: root.screen && root.screen.name ? root.screen.name : ""
+    readonly property string barPosition: Settings.getBarPositionForScreen(root.screenName)
+    readonly property bool barIsVertical: root.barPosition === "left" || root.barPosition === "right"
+    readonly property int capsuleHeight: root.screenName.length > 0 ? Style.getCapsuleHeightForScreen(root.screenName) : Style.capsuleHeight
+    readonly property int barFontSize: root.screenName.length > 0 ? Style.getBarFontSizeForScreen(root.screenName) : Style.barFontSize
+    readonly property int capsulePadding: Style.marginM
+    readonly property int clockIconSize: Math.max(12, root.barFontSize + 1)
+    readonly property int minimumCapsuleWidth: root.snapshot && root.snapshot.bar && root.snapshot.bar.hasActiveTask
+        ? Math.max(Style.baseWidgetSize * 3, root.capsuleHeight * 3)
+        : root.capsuleHeight
+    readonly property int maximumCapsuleWidth: Math.max(Style.baseWidgetSize * 9, root.capsuleHeight * 9)
+    readonly property int capsuleWidth: Math.max(
+        root.minimumCapsuleWidth,
+        Math.min(root.maximumCapsuleWidth, Math.ceil(Math.max(summaryText.implicitWidth, root.clockIconSize) + (root.capsulePadding * 2)))
+    )
+    readonly property int contentWidth: root.barIsVertical ? root.capsuleHeight : root.capsuleWidth
+    readonly property int contentHeight: root.capsuleHeight
+    readonly property color dangerColor: Color.mHover
 
     Rectangle {
         id: barBackground
-        anchors.fill: parent
-        radius: 8
-        color: root.backgroundColor
-        border.width: 1
-        border.color: root.borderColor
+        x: Style.pixelAlignCenter(parent.width, width)
+        y: Style.pixelAlignCenter(parent.height, height)
+        width: root.contentWidth
+        height: root.contentHeight
+        radius: Style.radiusL
+        color: widgetMouseArea.containsMouse ? Color.mHover : Style.capsuleColor
+        border.width: Style.capsuleBorderWidth
+        border.color: Style.capsuleBorderColor
     }
 
-    Row {
-        id: barRow
+    Image {
+        id: clockIcon
+        anchors.centerIn: barBackground
+        source: Qt.resolvedUrl("assets/clock.svg")
+        width: root.clockIconSize
+        height: root.clockIconSize
+        fillMode: Image.PreserveAspectFit
+        smooth: true
+        sourceSize: Qt.size(width, height)
+        visible: summaryText.text.length === 0
+        layer.enabled: true
+        layer.effect: MultiEffect {
+            colorization: 1.0
+            colorizationColor: summaryText.color
+        }
+    }
+
+    Text {
+        id: summaryText
+        anchors.centerIn: barBackground
+        width: Math.max(1, barBackground.width - (root.capsulePadding * 2))
+        horizontalAlignment: Text.AlignHCenter
+        verticalAlignment: Text.AlignVCenter
+        text: {
+            var title = root.snapshot && root.snapshot.bar
+                ? root.snapshot.bar.activeTaskTitle
+                : ""
+            var hasActive = root.snapshot && root.snapshot.bar && root.snapshot.bar.hasActiveTask
+
+            if (hasActive) {
+                var elapsedLabel = root.snapshot.bar.activeElapsedLabel
+                    ? root.snapshot.bar.activeElapsedLabel
+                    : root.snapshot.bar.todayTrackedLabel
+                return title + " · " + elapsedLabel
+            }
+
+            var fallback = root.getFallbackActiveTaskFromSettings(Date.now())
+            if (fallback) {
+                return fallback.title + " · " + fallback.elapsedLabel
+            }
+
+            return ""
+        }
+        color: widgetMouseArea.containsMouse ? Color.mOnHover : root.dangerColor
+        font.pixelSize: root.barFontSize + 3
+        font.bold: false
+        elide: Text.ElideRight
+        visible: text.length > 0
+    }
+
+    MouseArea {
+        id: widgetMouseArea
         anchors.fill: parent
-        anchors.margins: root.padding
-        spacing: 12
+        hoverEnabled: true
+        cursorShape: Qt.PointingHandCursor
+        onClicked: root.openPanel()
+    }
 
-        Column {
-            id: summaryColumn
-            width: Math.max(0, root.width - openPanelButton.width - barRow.spacing - (root.padding * 2))
-            spacing: 2
-
-            Text {
-                width: parent.width
-                text: root.snapshot && root.snapshot.bar ? root.snapshot.bar.activeTaskTitle : "No active task"
-                color: root.titleColor
-                font.pixelSize: 14
-                font.bold: true
-                elide: Text.ElideRight
-            }
-
-            Text {
-                width: parent.width
-                text: root.snapshot && root.snapshot.bar && root.snapshot.bar.hasActiveTask
-                    ? root.snapshot.bar.todayTrackedLabel
-                    : "No timer running"
-                color: root.mutedColor
-                font.pixelSize: 12
-                elide: Text.ElideRight
-            }
-        }
-
-        Rectangle {
-            id: openPanelButton
-            width: 64
-            height: 30
-            radius: 6
-            color: openPanelMouseArea.pressed ? "#478bdd" : root.accentColor
-
-            Text {
-                anchors.centerIn: parent
-                text: "Panel"
-                color: "#0d1117"
-                font.pixelSize: 12
-                font.bold: true
-            }
-
-            MouseArea {
-                id: openPanelMouseArea
-                anchors.fill: parent
-                onClicked: root.requestOpenPanel(Date.now())
-            }
-        }
+    Timer {
+        id: barRefreshTimer
+        interval: 1000
+        repeat: true
+        running: true
+        onTriggered: root.refreshFromBridge(Date.now())
     }
 }

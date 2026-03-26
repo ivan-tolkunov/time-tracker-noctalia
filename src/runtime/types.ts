@@ -1,4 +1,4 @@
-import type { ActiveTimer, AlertRecord, Session, Task } from "../types.js";
+import type { ActiveTimer, Session, Task } from "../types.js";
 import type { WorkdayOptions } from "../domain/workday.js";
 
 export const PERSISTED_STATE_VERSION = 1;
@@ -7,7 +7,6 @@ export interface RuntimePreferences extends WorkdayOptions {
   boundaryMinuteOfDay: number;
   weekStartsOn: NonNullable<WorkdayOptions["weekStartsOn"]>;
   refreshIntervalMs: number;
-  alertCheckIntervalMs: number;
 }
 
 export interface PersistedPluginState {
@@ -15,7 +14,6 @@ export interface PersistedPluginState {
   tasks: Task[];
   sessions: Session[];
   activeTimer: ActiveTimer | null;
-  alertRecords: AlertRecord[];
   preferences: RuntimePreferences;
 }
 
@@ -25,19 +23,10 @@ export interface RuntimeState {
     active: ActiveTimer | null;
     sessions: Session[];
   };
-  alertRecords: AlertRecord[];
   preferences: RuntimePreferences;
 }
 
 export interface PluginSettingsStorage {
   read(key: string): string | null | undefined;
   write(key: string, value: string): void;
-}
-
-export interface RuntimeAlertEvent {
-  key: string;
-  taskId: string;
-  eventType: "deadline-overdue" | "recurring-missed";
-  periodKey: string;
-  emittedAtMs: number;
 }

@@ -18,8 +18,7 @@ describe("runtime persistence", () => {
           {
             id: "task-a",
             title: "  Deep work  ",
-            createdAtMs: Date.parse("2026-03-10T08:00:00.000Z"),
-            recurring: { period: "daily", targetMinutes: 90 }
+            createdAtMs: Date.parse("2026-03-10T08:00:00.000Z")
           },
           {
             id: "task-a",
@@ -57,27 +56,11 @@ describe("runtime persistence", () => {
           taskId: "task-missing",
           startMs: Date.parse("2026-03-20T10:00:00.000Z")
         },
-        alertRecords: [
-          {
-            key: "wrong-key",
-            taskId: "task-a",
-            eventType: "deadline-overdue",
-            periodKey: "2026-03-20",
-            emittedAtMs: Date.parse("2026-03-20T11:00:00.000Z")
-          },
-          {
-            key: "duplicate-wrong-key",
-            taskId: "task-a",
-            eventType: "deadline-overdue",
-            periodKey: "2026-03-20",
-            emittedAtMs: Date.parse("2026-03-20T11:05:00.000Z")
-          }
-        ],
         preferences: {
           boundaryMinuteOfDay: -10,
           weekStartsOn: 10,
           refreshIntervalMs: 999,
-          alertCheckIntervalMs: "bad"
+          legacyUnknownIntervalMs: "bad"
         }
       },
       nowMs
@@ -88,8 +71,7 @@ describe("runtime persistence", () => {
       {
         id: "task-a",
         title: "Deep work",
-        createdAtMs: Date.parse("2026-03-10T08:00:00.000Z"),
-        recurring: { period: "daily", targetMinutes: 90 }
+        createdAtMs: Date.parse("2026-03-10T08:00:00.000Z")
       }
     ]);
     expect(normalized.sessions).toEqual([
@@ -101,15 +83,6 @@ describe("runtime persistence", () => {
       }
     ]);
     expect(normalized.activeTimer).toBeNull();
-    expect(normalized.alertRecords).toEqual([
-      {
-        key: "task-a::deadline-overdue::2026-03-20",
-        taskId: "task-a",
-        eventType: "deadline-overdue",
-        periodKey: "2026-03-20",
-        emittedAtMs: Date.parse("2026-03-20T11:00:00.000Z")
-      }
-    ]);
     expect(normalized.preferences).toEqual(DEFAULT_RUNTIME_PREFERENCES);
   });
 
@@ -125,20 +98,18 @@ describe("runtime persistence", () => {
           boundaryMinuteOfDay: 270,
           weekStartsOn: 9,
           refreshIntervalMs: 999,
-          alertCheckIntervalMs: 15_000
+          legacyUnknownIntervalMs: 15_000
         },
         {
           boundaryMinuteOfDay: 240,
           weekStartsOn: 2,
-          refreshIntervalMs: 45_000,
-          alertCheckIntervalMs: 90_000
+          refreshIntervalMs: 45_000
         }
       )
     ).toEqual({
       boundaryMinuteOfDay: 270,
       weekStartsOn: 2,
-      refreshIntervalMs: 45_000,
-      alertCheckIntervalMs: 15_000
+      refreshIntervalMs: 45_000
     });
   });
 
@@ -153,7 +124,6 @@ describe("runtime persistence", () => {
           taskId: "task-a",
           startMs: -123_456
         },
-        alertRecords: [],
         preferences: DEFAULT_RUNTIME_PREFERENCES
       },
       nowMs

@@ -17,6 +17,10 @@
     "plugins": []
   },
   "metadata": {
-    "defaultSettings": {}
+    "defaultSettings": {
+      "boundaryTimeText": "00:00",
+      "weekStartsOn": 1,
+      "refreshIntervalSecondsText": "30"
+    }
   }
 }

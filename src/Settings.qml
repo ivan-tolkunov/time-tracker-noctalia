@@ -1,8 +1,10 @@
 import QtQuick 2.15
+import qs.Commons
 
 Item {
     id: root
 
+    property var pluginApi: null
     property var uiBridge: null
     property var runtimeBridge: null
     property string formError: ""
@@ -10,21 +12,36 @@ Item {
     property string boundaryTimeText: "00:00"
     property int weekStartsOn: 1
     property string refreshIntervalSecondsText: "30"
-    property string alertCheckIntervalSecondsText: "60"
+    property bool suppressAutoSave: true
 
     implicitWidth: 420
     implicitHeight: 520
 
-    readonly property int spacingUnit: 12
-    readonly property color pageColor: "#111318"
-    readonly property color cardColor: "#181c22"
-    readonly property color borderColor: "#2a313b"
-    readonly property color titleColor: "#f4f6fb"
-    readonly property color bodyColor: "#d7dce6"
-    readonly property color mutedColor: "#9ea8ba"
-    readonly property color accentColor: "#5aa9ff"
-    readonly property color successColor: "#56c288"
-    readonly property color dangerColor: "#ff7a7a"
+    readonly property int compactSpacing: Style.marginM
+    readonly property int controlGap: Style.marginM
+    readonly property int spacingUnit: Style.marginL
+    readonly property int controlRadius: Style.radiusM
+    readonly property int surfaceRadius: Style.radiusL
+    readonly property color pageColor: Color.mSurface
+    readonly property color cardColor: Color.mSurfaceVariant
+    readonly property color inputFillColor: Color.mSurface
+    readonly property color borderColor: Style.capsuleBorderColor
+    readonly property color titleColor: Color.mOnSurface
+    readonly property color bodyColor: Color.mOnSurface
+    readonly property color mutedColor: Color.mOnSurfaceVariant
+    readonly property color accentColor: Color.mPrimary
+    readonly property color accentPressedColor: Color.mHover
+    readonly property color accentTextColor: Color.mOnSurface
+    readonly property color successColor: Color.mPrimary
+    readonly property color dangerColor: Color.mHover
+    readonly property color neutralButtonColor: Color.mSurface
+    readonly property color neutralButtonPressedColor: Color.mSurfaceVariant
+
+    readonly property var fallbackSettings: ({
+        "boundaryTimeText": "00:00",
+        "weekStartsOn": 1,
+        "refreshIntervalSecondsText": "30"
+    })
 
     function getPluginMainInstance() {
         if (typeof pluginApi !== "undefined" && pluginApi && pluginApi.mainInstance) {
@@ -36,75 +53,174 @@ Item {
 
     function getRuntimeBridge() {
         var mainInstance = root.getPluginMainInstance()
-        if (root.runtimeBridge) {
-            return root.runtimeBridge
-        }
 
-        if (root.uiBridge) {
-            return root.uiBridge
+        if (mainInstance && mainInstance.updateSettingsFromDraft) {
+            return mainInstance
         }
 
         if (mainInstance && mainInstance.runtimeBridge) {
             return mainInstance.runtimeBridge
         }
 
+        if (mainInstance && mainInstance.ensureSharedRuntimeBridge) {
+            var ensuredBridge = mainInstance.ensureSharedRuntimeBridge()
+            if (ensuredBridge) {
+                return ensuredBridge
+            }
+        }
+
+        if (root.runtimeBridge) {
+            return root.runtimeBridge
+        }
+
+        if (root.uiBridge && root.uiBridge.updateSettingsFromDraft) {
+            return root.uiBridge
+        }
+
         return null
     }
 
-    function syncFromBridge() {
-        var bridge = root.getRuntimeBridge()
-        if (!bridge || !bridge.getSettingsState) {
-            return null
+    function getDefaultSettings() {
+        if (root.pluginApi && root.pluginApi.manifest && root.pluginApi.manifest.metadata && root.pluginApi.manifest.metadata.defaultSettings) {
+            return root.pluginApi.manifest.metadata.defaultSettings
         }
 
-        var settingsState = bridge.getSettingsState()
-        if (!settingsState) {
-            return null
-        }
-
-        root.boundaryTimeText = settingsState.boundaryTimeText
-        root.weekStartsOn = settingsState.weekStartsOn
-        root.refreshIntervalSecondsText = String(settingsState.refreshIntervalSeconds)
-        root.alertCheckIntervalSecondsText = String(settingsState.alertCheckIntervalSeconds)
-        return settingsState
+        return root.fallbackSettings
     }
 
-    function submitSettings() {
+    function readSettingsDraft() {
+        var defaults = root.getDefaultSettings()
+        var pluginSettings = root.pluginApi && root.pluginApi.pluginSettings ? root.pluginApi.pluginSettings : ({})
+
+        return {
+            "boundaryTimeText": pluginSettings.boundaryTimeText !== undefined ? String(pluginSettings.boundaryTimeText) : String(defaults.boundaryTimeText),
+            "weekStartsOn": Number.isInteger(pluginSettings.weekStartsOn) ? pluginSettings.weekStartsOn : defaults.weekStartsOn,
+            "refreshIntervalSecondsText": pluginSettings.refreshIntervalSecondsText !== undefined ? String(pluginSettings.refreshIntervalSecondsText) : String(defaults.refreshIntervalSecondsText)
+        }
+    }
+
+    function applySettingsDraft(draft) {
+        root.boundaryTimeText = String(draft.boundaryTimeText)
+        root.weekStartsOn = draft.weekStartsOn
+        root.refreshIntervalSecondsText = String(draft.refreshIntervalSecondsText)
+    }
+
+    function getCurrentDraft() {
+        return {
+            "boundaryTimeText": root.boundaryTimeText,
+            "weekStartsOn": root.weekStartsOn,
+            "refreshIntervalSecondsText": root.refreshIntervalSecondsText
+        }
+    }
+
+    function validateDraft(draft) {
+        var match = /^(\d{1,2}):(\d{2})$/.exec(draft.boundaryTimeText.trim())
+        if (match === null) {
+            return { "ok": false, "reason": "invalid-boundary" }
+        }
+
+        var hours = Number(match[1])
+        var minutes = Number(match[2])
+        if (!Number.isInteger(hours) || !Number.isInteger(minutes) || hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
+            return { "ok": false, "reason": "invalid-boundary" }
+        }
+
+        if (!Number.isInteger(draft.weekStartsOn) || draft.weekStartsOn < 0 || draft.weekStartsOn > 6) {
+            return { "ok": false, "reason": "invalid-week-start" }
+        }
+
+        var refreshSeconds = Number(draft.refreshIntervalSecondsText.trim())
+        if (!Number.isInteger(refreshSeconds) || refreshSeconds < 1) {
+            return { "ok": false, "reason": "invalid-refresh-interval" }
+        }
+
+        return { "ok": true, "reason": null }
+    }
+
+    function persistPluginSettings(draft) {
+        if (!root.pluginApi) {
+            return false
+        }
+
+        var existingSettings = root.pluginApi.pluginSettings ? root.pluginApi.pluginSettings : ({})
+        var nextSettings = ({})
+        for (var key in existingSettings) {
+            nextSettings[key] = existingSettings[key]
+        }
+
+        nextSettings.boundaryTimeText = String(draft.boundaryTimeText)
+        nextSettings.weekStartsOn = draft.weekStartsOn
+        nextSettings.refreshIntervalSecondsText = String(draft.refreshIntervalSecondsText)
+        root.pluginApi.pluginSettings = nextSettings
+
+        if (root.pluginApi.saveSettings) {
+            root.pluginApi.saveSettings()
+        }
+
+        return true
+    }
+
+    function syncRuntimeBridgeFromDraft(draft) {
         var bridge = root.getRuntimeBridge()
         if (!bridge || !bridge.updateSettingsFromDraft) {
-            root.formError = "missing-settings-bridge"
+            return { "ok": true, "reason": null, "settings": null }
+        }
+
+        return bridge.updateSettingsFromDraft(draft, Date.now())
+    }
+
+    function saveSettings() {
+        var draft = root.getCurrentDraft()
+        var validationResult = root.validateDraft(draft)
+        if (!validationResult.ok) {
+            root.formError = validationResult.reason
             root.statusMessage = ""
             return
         }
 
-        var result = bridge.updateSettingsFromDraft(
-            {
-                "boundaryTimeText": root.boundaryTimeText,
-                "weekStartsOn": root.weekStartsOn,
-                "refreshIntervalSecondsText": root.refreshIntervalSecondsText,
-                "alertCheckIntervalSecondsText": root.alertCheckIntervalSecondsText
-            },
-            Date.now()
-        )
-
-        if (!result || !result.ok) {
-            root.formError = result && result.reason ? String(result.reason) : "settings-update-failed"
+        if (!root.persistPluginSettings(draft)) {
+            root.formError = "missing-plugin-api"
             root.statusMessage = ""
+            return
+        }
+
+        var runtimeResult = root.syncRuntimeBridgeFromDraft(draft)
+        if (runtimeResult && !runtimeResult.ok) {
+            root.formError = ""
+            root.statusMessage = "Settings saved; live runtime sync pending"
+            root.applySettingsDraft(root.readSettingsDraft())
             return
         }
 
         root.formError = ""
         root.statusMessage = "Settings saved"
-        root.syncFromBridge()
+        root.applySettingsDraft(root.readSettingsDraft())
     }
 
     function reloadCurrentSettings() {
         root.formError = ""
         root.statusMessage = ""
-        root.syncFromBridge()
+        root.suppressAutoSave = true
+        root.applySettingsDraft(root.readSettingsDraft())
+        root.suppressAutoSave = false
+    }
+
+    function scheduleAutoSave() {
+        if (root.suppressAutoSave) {
+            return
+        }
+
+        autoSaveTimer.restart()
     }
 
     Component.onCompleted: root.reloadCurrentSettings()
+
+    Timer {
+        id: autoSaveTimer
+        interval: 600
+        repeat: false
+        onTriggered: root.saveSettings()
+    }
 
     Rectangle {
         anchors.fill: parent
@@ -125,9 +241,9 @@ Item {
 
             Rectangle {
                 width: parent.width
-                radius: 10
+                radius: root.surfaceRadius
                 color: root.cardColor
-                border.width: 1
+                border.width: Style.capsuleBorderWidth
                 border.color: root.borderColor
                 implicitHeight: heroColumn.implicitHeight + (root.spacingUnit * 2)
 
@@ -135,7 +251,7 @@ Item {
                     id: heroColumn
                     anchors.fill: parent
                     anchors.margins: root.spacingUnit
-                    spacing: 6
+                    spacing: root.compactSpacing
 
                     Text {
                         text: "Settings"
@@ -147,7 +263,7 @@ Item {
                     Text {
                         width: parent.width
                         wrapMode: Text.WordWrap
-                        text: "Tune the v1 tracker cadence and logical day boundaries. Values save through the existing runtime preferences model."
+                        text: "Tune the tracker cadence and logical day boundaries."
                         color: root.bodyColor
                         font.pixelSize: 12
                     }
@@ -156,9 +272,9 @@ Item {
 
             Rectangle {
                 width: parent.width
-                radius: 10
+                radius: root.surfaceRadius
                 color: root.cardColor
-                border.width: 1
+                border.width: Style.capsuleBorderWidth
                 border.color: root.borderColor
                 implicitHeight: boundaryColumn.implicitHeight + (root.spacingUnit * 2)
 
@@ -166,7 +282,7 @@ Item {
                     id: boundaryColumn
                     anchors.fill: parent
                     anchors.margins: root.spacingUnit
-                    spacing: 8
+                    spacing: root.controlGap
 
                     Text {
                         text: "Workday boundary"
@@ -178,28 +294,31 @@ Item {
                     Text {
                         width: parent.width
                         wrapMode: Text.WordWrap
-                        text: "Enter local wall-clock time as HH:MM. Example: 04:00 starts each logical day at 4 AM."
+                        text: "Enter local wall-clock time as HH:MM."
                         color: root.mutedColor
                         font.pixelSize: 12
                     }
 
                     Rectangle {
                         width: parent.width
-                        height: 40
-                        radius: 8
-                        color: "#20252d"
-                        border.width: 1
+                        height: Style.barHeight
+                        radius: root.controlRadius
+                        color: root.inputFillColor
+                        border.width: Style.capsuleBorderWidth
                         border.color: root.borderColor
 
                         TextInput {
                             anchors.fill: parent
-                            anchors.margins: 10
+                            anchors.margins: root.compactSpacing
                             color: root.bodyColor
-                            selectedTextColor: root.pageColor
+                            selectedTextColor: root.accentTextColor
                             selectionColor: root.accentColor
                             text: root.boundaryTimeText
                             font.pixelSize: 13
-                            onTextChanged: root.boundaryTimeText = text
+                            onTextChanged: {
+                                root.boundaryTimeText = text
+                                root.scheduleAutoSave()
+                            }
                         }
                     }
                 }
@@ -207,9 +326,9 @@ Item {
 
             Rectangle {
                 width: parent.width
-                radius: 10
+                radius: root.surfaceRadius
                 color: root.cardColor
-                border.width: 1
+                border.width: Style.capsuleBorderWidth
                 border.color: root.borderColor
                 implicitHeight: weekStartColumn.implicitHeight + (root.spacingUnit * 2)
 
@@ -217,7 +336,7 @@ Item {
                     id: weekStartColumn
                     anchors.fill: parent
                     anchors.margins: root.spacingUnit
-                    spacing: 8
+                    spacing: root.controlGap
 
                     Text {
                         text: "Week starts on"
@@ -228,7 +347,7 @@ Item {
 
                     Flow {
                         width: parent.width
-                        spacing: 8
+                        spacing: root.controlGap
 
                         Repeater {
                             model: [
@@ -245,23 +364,26 @@ Item {
                                 required property var modelData
 
                                 width: 48
-                                height: 30
-                                radius: 6
-                                color: root.weekStartsOn === modelData.value ? root.accentColor : "#20252d"
-                                border.width: 1
+                                height: Style.baseWidgetSize
+                                radius: root.controlRadius
+                                color: root.weekStartsOn === modelData.value ? root.accentColor : root.inputFillColor
+                                border.width: Style.capsuleBorderWidth
                                 border.color: root.weekStartsOn === modelData.value ? root.accentColor : root.borderColor
 
                                 Text {
                                     anchors.centerIn: parent
                                     text: modelData.label
-                                    color: root.weekStartsOn === modelData.value ? root.pageColor : root.bodyColor
+                                    color: root.weekStartsOn === modelData.value ? root.accentTextColor : root.bodyColor
                                     font.pixelSize: 12
                                     font.bold: root.weekStartsOn === modelData.value
                                 }
 
                                 MouseArea {
                                     anchors.fill: parent
-                                    onClicked: root.weekStartsOn = modelData.value
+                                    onClicked: {
+                                        root.weekStartsOn = modelData.value
+                                        root.scheduleAutoSave()
+                                    }
                                 }
                             }
                         }
@@ -271,9 +393,9 @@ Item {
 
             Rectangle {
                 width: parent.width
-                radius: 10
+                radius: root.surfaceRadius
                 color: root.cardColor
-                border.width: 1
+                border.width: Style.capsuleBorderWidth
                 border.color: root.borderColor
                 implicitHeight: intervalColumn.implicitHeight + (root.spacingUnit * 2)
 
@@ -281,90 +403,37 @@ Item {
                     id: intervalColumn
                     anchors.fill: parent
                     anchors.margins: root.spacingUnit
-                    spacing: 8
+                    spacing: root.controlGap
 
                     Text {
-                        text: "Runtime intervals"
+                        text: "Refresh interval"
                         color: root.titleColor
                         font.pixelSize: 15
                         font.bold: true
                     }
 
-                    Row {
+                    Rectangle {
                         width: parent.width
-                        spacing: 8
+                        height: Style.barHeight
+                        radius: root.controlRadius
+                        color: root.inputFillColor
+                        border.width: Style.capsuleBorderWidth
+                        border.color: root.borderColor
 
-                        Column {
-                            width: Math.max(120, (parent.width - parent.spacing) / 2)
-                            spacing: 6
-
-                            Text {
-                                text: "Refresh seconds"
-                                color: root.mutedColor
-                                font.pixelSize: 12
-                            }
-
-                            Rectangle {
-                                width: parent.width
-                                height: 40
-                                radius: 8
-                                color: "#20252d"
-                                border.width: 1
-                                border.color: root.borderColor
-
-                                TextInput {
-                                    anchors.fill: parent
-                                    anchors.margins: 10
-                                    color: root.bodyColor
-                                    selectedTextColor: root.pageColor
-                                    selectionColor: root.accentColor
-                                    text: root.refreshIntervalSecondsText
-                                    font.pixelSize: 13
-                                    inputMethodHints: Qt.ImhDigitsOnly
-                                    onTextChanged: root.refreshIntervalSecondsText = text
-                                }
+                        TextInput {
+                            anchors.fill: parent
+                            anchors.margins: root.compactSpacing
+                            color: root.bodyColor
+                            selectedTextColor: root.accentTextColor
+                            selectionColor: root.accentColor
+                            text: root.refreshIntervalSecondsText
+                            font.pixelSize: 13
+                            inputMethodHints: Qt.ImhDigitsOnly
+                            onTextChanged: {
+                                root.refreshIntervalSecondsText = text
+                                root.scheduleAutoSave()
                             }
                         }
-
-                        Column {
-                            width: Math.max(120, (parent.width - parent.spacing) / 2)
-                            spacing: 6
-
-                            Text {
-                                text: "Alert seconds"
-                                color: root.mutedColor
-                                font.pixelSize: 12
-                            }
-
-                            Rectangle {
-                                width: parent.width
-                                height: 40
-                                radius: 8
-                                color: "#20252d"
-                                border.width: 1
-                                border.color: root.borderColor
-
-                                TextInput {
-                                    anchors.fill: parent
-                                    anchors.margins: 10
-                                    color: root.bodyColor
-                                    selectedTextColor: root.pageColor
-                                    selectionColor: root.accentColor
-                                    text: root.alertCheckIntervalSecondsText
-                                    font.pixelSize: 13
-                                    inputMethodHints: Qt.ImhDigitsOnly
-                                    onTextChanged: root.alertCheckIntervalSecondsText = text
-                                }
-                            }
-                        }
-                    }
-
-                    Text {
-                        width: parent.width
-                        wrapMode: Text.WordWrap
-                        text: "Intervals are stored in milliseconds internally, but edited here in seconds to match the current v1 defaults."
-                        color: root.mutedColor
-                        font.pixelSize: 12
                     }
                 }
             }
@@ -386,50 +455,6 @@ Item {
                 font.bold: true
             }
 
-            Row {
-                spacing: 8
-
-                Rectangle {
-                    width: 96
-                    height: 32
-                    radius: 6
-                    color: saveMouseArea.pressed ? "#478bdd" : root.accentColor
-
-                    Text {
-                        anchors.centerIn: parent
-                        text: "Save"
-                        color: root.pageColor
-                        font.pixelSize: 12
-                        font.bold: true
-                    }
-
-                    MouseArea {
-                        id: saveMouseArea
-                        anchors.fill: parent
-                        onClicked: root.submitSettings()
-                    }
-                }
-
-                Rectangle {
-                    width: 120
-                    height: 32
-                    radius: 6
-                    color: reloadMouseArea.pressed ? "#252b34" : "#20252d"
-
-                    Text {
-                        anchors.centerIn: parent
-                        text: "Reload current"
-                        color: root.bodyColor
-                        font.pixelSize: 12
-                    }
-
-                    MouseArea {
-                        id: reloadMouseArea
-                        anchors.fill: parent
-                        onClicked: root.reloadCurrentSettings()
-                    }
-                }
-            }
         }
     }
 }

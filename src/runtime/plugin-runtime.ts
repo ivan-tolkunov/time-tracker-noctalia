@@ -1,18 +1,12 @@
 import {
   calculateWeeklyAverageMinutes,
-  evaluateMostRecentlyClosedRecurringPeriod,
-  evaluateRecurringProgress,
-  getDeadlineStatus,
-  getTodayTrackedMinutesForTask,
   getAllClosedSessions,
-  recordAlertIfNew,
+  getTodayTrackedMinutesForTask,
   startTimer,
   stopTimer
 } from "../domain/index.js";
 import type {
   ActiveTimer,
-  AlertRecord,
-  RecurringPeriod,
   Session,
   SessionId,
   Task,
@@ -28,7 +22,6 @@ import {
 import type {
   PersistedPluginState,
   PluginSettingsStorage,
-  RuntimeAlertEvent,
   RuntimePreferences,
   RuntimeState
 } from "./types.js";
@@ -42,28 +35,20 @@ export interface PluginRuntimeOptions {
 export type CreateTaskFailureReason =
   | "empty-title"
   | "invalid-created-at"
-  | "invalid-deadline"
-  | "invalid-recurring"
   | "id-collision";
 
 export type UpdateTaskFailureReason =
   | "not-found"
   | "empty-title"
-  | "invalid-deadline"
-  | "invalid-recurring"
   | "no-changes";
 
 export interface CreateTaskInput {
   title: string;
   createdAtMs?: number;
-  deadline?: NonNullable<Task["deadline"]> | null;
-  recurring?: NonNullable<Task["recurring"]> | null;
 }
 
 export interface UpdateTaskInput {
   title?: string;
-  deadline?: NonNullable<Task["deadline"]> | null;
-  recurring?: NonNullable<Task["recurring"]> | null;
 }
 
 export interface CreateTaskResult {
@@ -78,25 +63,11 @@ export interface UpdateTaskResult {
   reason: UpdateTaskFailureReason | null;
 }
 
-export interface TaskRecurringStatus {
-  period: RecurringPeriod;
-  periodKey: string;
-  targetMinutes: number;
-  trackedMinutes: number;
-  remainingMinutes: number;
-  met: boolean;
-  mostRecentlyClosedPeriodMissed: boolean;
-  mostRecentlyClosedPeriodKey: string | null;
-}
-
 export interface TaskView {
   task: Task;
   isActive: boolean;
   todayTrackedMinutes: number;
   weeklyAverageMinutes: number;
-  overdue: boolean;
-  deadlineStatus: ReturnType<typeof getDeadlineStatus>;
-  recurring: TaskRecurringStatus | null;
 }
 
 export interface ActiveTaskState {
@@ -118,7 +89,6 @@ function toRuntimeState(persisted: PersistedPluginState): RuntimeState {
       active: persisted.activeTimer,
       sessions: [...persisted.sessions]
     },
-    alertRecords: [...persisted.alertRecords],
     preferences: { ...persisted.preferences }
   };
 }
@@ -129,7 +99,6 @@ function toPersistedState(state: RuntimeState): PersistedPluginState {
     tasks: [...state.tasks],
     sessions: [...state.timerState.sessions],
     activeTimer: state.timerState.active,
-    alertRecords: [...state.alertRecords],
     preferences: { ...state.preferences }
   };
 }
@@ -149,41 +118,6 @@ function isFiniteMs(value: number): boolean {
 function normalizeTitle(title: string): string | null {
   const normalized = title.trim();
   return normalized.length > 0 ? normalized : null;
-}
-
-function normalizeDeadline(
-  deadline: NonNullable<Task["deadline"]> | null | undefined
-): NonNullable<Task["deadline"]> | null {
-  if (deadline === undefined) {
-    return null;
-  }
-
-  if (deadline === null || !isFiniteMs(deadline.dueAtMs)) {
-    return null;
-  }
-
-  return { dueAtMs: deadline.dueAtMs };
-}
-
-function normalizeRecurring(
-  recurring: NonNullable<Task["recurring"]> | null | undefined
-): NonNullable<Task["recurring"]> | null {
-  if (recurring === undefined) {
-    return null;
-  }
-
-  if (recurring === null) {
-    return null;
-  }
-
-  if (!Number.isInteger(recurring.targetMinutes) || recurring.targetMinutes <= 0) {
-    return null;
-  }
-
-  return {
-    period: recurring.period,
-    targetMinutes: recurring.targetMinutes
-  };
 }
 
 export class PluginRuntime {
@@ -237,32 +171,12 @@ export class PluginRuntime {
   }
 
   listTaskViews(nowMs = this.options.now()): TaskView[] {
-    return this.listTasks().map((task) => {
-      const recurringProgress = this.getRecurringProgress(task.id, nowMs);
-      const closedRecurring = this.getMostRecentlyClosedRecurringStatus(task.id, nowMs);
-
-      return {
-        task,
-        isActive: this.state.timerState.active?.taskId === task.id,
-        todayTrackedMinutes: this.getTodayTrackedMinutes(task.id, nowMs),
-        weeklyAverageMinutes: this.getWeeklyAverageMinutes(task.id, nowMs),
-        overdue: this.getDeadlineStatus(task.id, nowMs) === "overdue",
-        deadlineStatus: this.getDeadlineStatus(task.id, nowMs),
-        recurring:
-          recurringProgress === null
-            ? null
-            : {
-                period: recurringProgress.period,
-                periodKey: recurringProgress.periodKey,
-                targetMinutes: recurringProgress.targetMinutes,
-                trackedMinutes: recurringProgress.trackedMinutes,
-                remainingMinutes: recurringProgress.remainingMinutes,
-                met: recurringProgress.met,
-                mostRecentlyClosedPeriodMissed: closedRecurring?.missed ?? false,
-                mostRecentlyClosedPeriodKey: closedRecurring?.periodKey ?? null
-              }
-      };
-    });
+    return this.listTasks().map((task) => ({
+      task,
+      isActive: this.state.timerState.active?.taskId === task.id,
+      todayTrackedMinutes: this.getTodayTrackedMinutes(task.id, nowMs),
+      weeklyAverageMinutes: this.getWeeklyAverageMinutes(task.id, nowMs)
+    }));
   }
 
   getActiveTaskState(nowMs = this.options.now()): ActiveTaskState {
@@ -307,43 +221,6 @@ export class PluginRuntime {
     ).averageMinutesPerWeek;
   }
 
-  getDeadlineStatus(taskId: TaskId, nowMs = this.options.now()): ReturnType<typeof getDeadlineStatus> {
-    const task = this.getTaskById(taskId);
-    if (task === null) {
-      return "none";
-    }
-
-    return getDeadlineStatus(task, nowMs);
-  }
-
-  getRecurringProgress(taskId: TaskId, nowMs = this.options.now()) {
-    const task = this.getTaskById(taskId);
-    if (task === null) {
-      return null;
-    }
-
-    return evaluateRecurringProgress(
-      task,
-      getAllClosedSessions(this.state.timerState, nowMs),
-      nowMs,
-      this.state.preferences
-    );
-  }
-
-  getMostRecentlyClosedRecurringStatus(taskId: TaskId, nowMs = this.options.now()) {
-    const task = this.getTaskById(taskId);
-    if (task === null) {
-      return null;
-    }
-
-    return evaluateMostRecentlyClosedRecurringPeriod(
-      task,
-      getAllClosedSessions(this.state.timerState, nowMs),
-      nowMs,
-      this.state.preferences
-    );
-  }
-
   createTask(input: CreateTaskInput, nowMs = this.options.now()): CreateTaskResult {
     const title = normalizeTitle(input.title);
     if (title === null) {
@@ -353,16 +230,6 @@ export class PluginRuntime {
     const createdAtMs = input.createdAtMs ?? nowMs;
     if (!isFiniteMs(createdAtMs)) {
       return { created: false, task: null, reason: "invalid-created-at" };
-    }
-
-    const deadline = normalizeDeadline(input.deadline);
-    if (input.deadline !== undefined && input.deadline !== null && deadline === null) {
-      return { created: false, task: null, reason: "invalid-deadline" };
-    }
-
-    const recurring = normalizeRecurring(input.recurring);
-    if (input.recurring !== undefined && input.recurring !== null && recurring === null) {
-      return { created: false, task: null, reason: "invalid-recurring" };
     }
 
     let taskId: TaskId | null = null;
@@ -381,9 +248,7 @@ export class PluginRuntime {
     const task: Task = {
       id: taskId,
       title,
-      createdAtMs,
-      ...(deadline === null ? {} : { deadline }),
-      ...(recurring === null ? {} : { recurring })
+      createdAtMs
     };
 
     this.state = {
@@ -414,53 +279,6 @@ export class PluginRuntime {
           title: nextTitle
         };
         changed = true;
-      }
-    }
-
-    if (input.deadline !== undefined) {
-      if (input.deadline === null) {
-        if (nextTask.deadline !== undefined) {
-          const { deadline: _removedDeadline, ...withoutDeadline } = nextTask;
-          nextTask = withoutDeadline;
-          changed = true;
-        }
-      } else {
-        const nextDeadline = normalizeDeadline(input.deadline);
-        if (nextDeadline === null) {
-          return { updated: false, task: null, reason: "invalid-deadline" };
-        }
-        if (nextTask.deadline?.dueAtMs !== nextDeadline.dueAtMs) {
-          nextTask = {
-            ...nextTask,
-            deadline: nextDeadline
-          };
-          changed = true;
-        }
-      }
-    }
-
-    if (input.recurring !== undefined) {
-      if (input.recurring === null) {
-        if (nextTask.recurring !== undefined) {
-          const { recurring: _removedRecurring, ...withoutRecurring } = nextTask;
-          nextTask = withoutRecurring;
-          changed = true;
-        }
-      } else {
-        const nextRecurring = normalizeRecurring(input.recurring);
-        if (nextRecurring === null) {
-          return { updated: false, task: null, reason: "invalid-recurring" };
-        }
-        if (
-          nextTask.recurring?.period !== nextRecurring.period ||
-          nextTask.recurring?.targetMinutes !== nextRecurring.targetMinutes
-        ) {
-          nextTask = {
-            ...nextTask,
-            recurring: nextRecurring
-          };
-          changed = true;
-        }
       }
     }
 
@@ -553,8 +371,7 @@ export class PluginRuntime {
       timerState: {
         active: nextActive,
         sessions: nextSessions
-      },
-      alertRecords: this.state.alertRecords.filter((record) => record.taskId !== taskId)
+      }
     };
     return true;
   }
@@ -567,74 +384,8 @@ export class PluginRuntime {
     };
   }
 
-  runAlertCheck(nowMs = this.options.now()): RuntimeAlertEvent[] {
-    const events: RuntimeAlertEvent[] = [];
-    let nextRecords: AlertRecord[] = this.state.alertRecords;
-    const closedSessions = getAllClosedSessions(this.state.timerState, nowMs);
-
-    for (const task of this.state.tasks) {
-      if (getDeadlineStatus(task, nowMs) === "overdue") {
-        const periodKey = task.deadline === undefined ? "no-deadline" : `deadline:${task.deadline.dueAtMs}`;
-        const update = recordAlertIfNew(nextRecords, task.id, "deadline-overdue", periodKey, nowMs);
-        nextRecords = update.records;
-        if (update.emitted) {
-          events.push({
-            key: update.key,
-            taskId: task.id,
-            eventType: "deadline-overdue",
-            periodKey,
-            emittedAtMs: nowMs
-          });
-        }
-      }
-
-      if (task.completedAtMs !== undefined) {
-        continue;
-      }
-
-      const closedRecurring = evaluateMostRecentlyClosedRecurringPeriod(
-        task,
-        closedSessions,
-        nowMs,
-        this.state.preferences
-      );
-      if (closedRecurring?.missed === true) {
-        const update = recordAlertIfNew(
-          nextRecords,
-          task.id,
-          "recurring-missed",
-          closedRecurring.periodKey,
-          nowMs
-        );
-        nextRecords = update.records;
-        if (update.emitted) {
-          events.push({
-            key: update.key,
-            taskId: task.id,
-            eventType: "recurring-missed",
-            periodKey: closedRecurring.periodKey,
-            emittedAtMs: nowMs
-          });
-        }
-      }
-    }
-
-    if (nextRecords !== this.state.alertRecords) {
-      this.state = {
-        ...this.state,
-        alertRecords: nextRecords
-      };
-    }
-
-    return events;
-  }
-
   getSessions(): Session[] {
     return [...this.state.timerState.sessions];
-  }
-
-  getAlertRecords(): AlertRecord[] {
-    return [...this.state.alertRecords];
   }
 
   getPreferences(): RuntimePreferences {

@@ -1,5 +1,4 @@
-import { makeAlertKey } from "../domain/alert-dedupe.js";
-import type { RecurringPeriod, Task } from "../types.js";
+import type { Task } from "../types.js";
 import {
   type PersistedPluginState,
   type PluginSettingsStorage,
@@ -12,8 +11,7 @@ const DAY_MINUTES = 24 * 60;
 export const DEFAULT_RUNTIME_PREFERENCES: RuntimePreferences = {
   boundaryMinuteOfDay: 0,
   weekStartsOn: 1,
-  refreshIntervalMs: 30_000,
-  alertCheckIntervalMs: 60_000
+  refreshIntervalMs: 30_000
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -37,14 +35,6 @@ function readNonEmptyString(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
-function sanitizeRecurringPeriod(value: unknown): RecurringPeriod | null {
-  if (value === "daily" || value === "weekly") {
-    return value;
-  }
-
-  return null;
-}
-
 function sanitizeTask(raw: unknown, nowMs: number): Task | null {
   if (!isRecord(raw)) {
     return null;
@@ -65,30 +55,11 @@ function sanitizeTask(raw: unknown, nowMs: number): Task | null {
     completedAtMs = rawCompletedAtMs;
   }
 
-  let deadline: Task["deadline"];
-  if (isRecord(raw.deadline)) {
-    const dueAtMs = readFiniteNumber(raw.deadline.dueAtMs);
-    if (dueAtMs !== null && dueAtMs >= 0) {
-      deadline = { dueAtMs };
-    }
-  }
-
-  let recurring: Task["recurring"];
-  if (isRecord(raw.recurring)) {
-    const period = sanitizeRecurringPeriod(raw.recurring.period);
-    const targetMinutes = readFiniteNumber(raw.recurring.targetMinutes);
-    if (period !== null && targetMinutes !== null && Number.isInteger(targetMinutes) && targetMinutes > 0) {
-      recurring = { period, targetMinutes };
-    }
-  }
-
   return {
     id,
     title,
     createdAtMs,
-    ...(completedAtMs === undefined ? {} : { completedAtMs }),
-    ...(deadline === undefined ? {} : { deadline }),
-    ...(recurring === undefined ? {} : { recurring })
+    ...(completedAtMs === undefined ? {} : { completedAtMs })
   };
 }
 
@@ -126,17 +97,10 @@ export function normalizeRuntimePreferences(
       ? refreshIntervalCandidate
       : fallback.refreshIntervalMs;
 
-  const alertIntervalCandidate = readFiniteNumber(raw.alertCheckIntervalMs);
-  const alertCheckIntervalMs =
-    alertIntervalCandidate !== null && Number.isInteger(alertIntervalCandidate) && alertIntervalCandidate >= 1_000
-      ? alertIntervalCandidate
-      : fallback.alertCheckIntervalMs;
-
   return {
     boundaryMinuteOfDay,
     weekStartsOn,
-    refreshIntervalMs,
-    alertCheckIntervalMs
+    refreshIntervalMs
   };
 }
 
@@ -146,7 +110,6 @@ export function createDefaultPersistedState(): PersistedPluginState {
     tasks: [],
     sessions: [],
     activeTimer: null,
-    alertRecords: [],
     preferences: DEFAULT_RUNTIME_PREFERENCES
   };
 }
@@ -214,43 +177,11 @@ export function normalizePersistedState(input: unknown, nowMs: number): Persiste
     }
   }
 
-  const alertRecordsRaw = Array.isArray(input.alertRecords) ? input.alertRecords : [];
-  const seenAlertKeys = new Set<string>();
-  const alertRecords: PersistedPluginState["alertRecords"] = [];
-  for (const candidate of alertRecordsRaw) {
-    if (!isRecord(candidate)) {
-      continue;
-    }
-
-    const taskId = readNonEmptyString(candidate.taskId);
-    const eventType = readNonEmptyString(candidate.eventType);
-    const periodKey = readNonEmptyString(candidate.periodKey);
-    const emittedAtMs = readFiniteNumber(candidate.emittedAtMs);
-    if (taskId === null || eventType === null || periodKey === null || !taskIds.has(taskId)) {
-      continue;
-    }
-
-    const key = makeAlertKey(taskId, eventType, periodKey);
-    if (seenAlertKeys.has(key)) {
-      continue;
-    }
-
-    seenAlertKeys.add(key);
-    alertRecords.push({
-      key,
-      taskId,
-      eventType,
-      periodKey,
-      emittedAtMs: emittedAtMs === null ? nowMs : emittedAtMs
-    });
-  }
-
   return {
     version: PERSISTED_STATE_VERSION,
     tasks,
     sessions,
     activeTimer,
-    alertRecords,
     preferences: normalizeRuntimePreferences(input.preferences)
   };
 }

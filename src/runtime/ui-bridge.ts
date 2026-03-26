@@ -3,17 +3,18 @@ import type {
   CreateTaskResult,
   PluginRuntime,
   RuntimePeriodicRefresh,
-  TaskView,
   UpdateTaskInput,
   UpdateTaskResult
 } from "./plugin-runtime.js";
-import type { RuntimeAlertEvent, RuntimePreferences } from "./types.js";
-import type { RecurringPeriod, TaskId } from "../types.js";
+import type { RuntimePreferences } from "./types.js";
+import type { TaskId } from "../types.js";
 
 export interface BarWidgetState {
   hasActiveTask: boolean;
   activeTaskId: TaskId | null;
   activeTaskTitle: string;
+  activeElapsedMinutes: number;
+  activeElapsedLabel: string;
   todayTrackedMinutes: number;
   todayTrackedLabel: string;
 }
@@ -27,10 +28,6 @@ export interface PanelTaskState {
   todayTrackedLabel: string;
   weeklyAverageMinutes: number;
   weeklyAverageLabel: string;
-  deadlineStatus: TaskView["deadlineStatus"];
-  deadlineDueAtMs: number | null;
-  recurringPeriod: RecurringPeriod | null;
-  recurringTargetMinutes: number | null;
 }
 
 export interface PanelState {
@@ -54,22 +51,18 @@ export interface SettingsState {
   weekStartsOn: RuntimePreferences["weekStartsOn"];
   refreshIntervalMs: number;
   refreshIntervalSeconds: number;
-  alertCheckIntervalMs: number;
-  alertCheckIntervalSeconds: number;
 }
 
 export interface SettingsDraftInput {
   boundaryTimeText: string;
   weekStartsOn: number;
   refreshIntervalSecondsText: string;
-  alertCheckIntervalSecondsText: string;
 }
 
 export type SettingsMutationFailureReason =
   | "invalid-boundary"
   | "invalid-week-start"
-  | "invalid-refresh-interval"
-  | "invalid-alert-check-interval";
+  | "invalid-refresh-interval";
 
 export interface SettingsMutationResult {
   ok: boolean;
@@ -79,15 +72,11 @@ export interface SettingsMutationResult {
 
 export interface TaskDraftInput {
   title: string;
-  deadlineText: string;
-  recurringPeriod: string;
-  recurringTargetMinutes: number;
 }
 
 export type TaskDraftFailureReason =
   | CreateTaskResult["reason"]
-  | UpdateTaskResult["reason"]
-  | "invalid-deadline";
+  | UpdateTaskResult["reason"];
 
 export interface TaskDraftMutationResult {
   ok: boolean;
@@ -158,43 +147,6 @@ function isWeekStartsOn(value: number): value is RuntimePreferences["weekStartsO
   return Number.isInteger(value) && value >= 0 && value <= 6;
 }
 
-function parseDeadlineText(deadlineText: string): number | null {
-  const normalized = deadlineText.trim();
-  if (normalized.length === 0) {
-    return null;
-  }
-
-  const dueAtMs = Number(normalized);
-  if (!Number.isFinite(dueAtMs) || dueAtMs < 0) {
-    return null;
-  }
-
-  return dueAtMs;
-}
-
-function normalizeRecurringDraft(
-  recurringPeriod: string,
-  recurringTargetMinutes: number,
-  mode: "create" | "update"
-): NonNullable<CreateTaskInput["recurring"]> | null | undefined {
-  const normalizedPeriod = recurringPeriod.trim();
-  const hasPeriod = normalizedPeriod.length > 0;
-  const hasTarget = recurringTargetMinutes > 0;
-
-  if (!hasPeriod && !hasTarget) {
-    return mode === "create" ? undefined : null;
-  }
-
-  if ((normalizedPeriod !== "daily" && normalizedPeriod !== "weekly") || !Number.isInteger(recurringTargetMinutes)) {
-    return null;
-  }
-
-  return {
-    period: normalizedPeriod,
-    targetMinutes: recurringTargetMinutes
-  };
-}
-
 export function buildBarWidgetState(runtime: PluginRuntime, nowMs: number): BarWidgetState {
   const activeTaskState = runtime.getActiveTaskState(nowMs);
   const activeTask = activeTaskState.task;
@@ -204,6 +156,8 @@ export function buildBarWidgetState(runtime: PluginRuntime, nowMs: number): BarW
     hasActiveTask: activeTask !== null,
     activeTaskId: activeTask?.id ?? null,
     activeTaskTitle: activeTask?.title ?? "No active task",
+    activeElapsedMinutes: activeTaskState.elapsedMinutes,
+    activeElapsedLabel: formatMinutes(activeTaskState.elapsedMinutes),
     todayTrackedMinutes,
     todayTrackedLabel: `${formatMinutes(todayTrackedMinutes)} today`
   };
@@ -226,11 +180,7 @@ export function buildPanelState(runtime: PluginRuntime, nowMs: number): PanelSta
       todayTrackedMinutes: taskView.todayTrackedMinutes,
       todayTrackedLabel: formatMinutes(taskView.todayTrackedMinutes),
       weeklyAverageMinutes: taskView.weeklyAverageMinutes,
-      weeklyAverageLabel: formatMinutes(taskView.weeklyAverageMinutes),
-      deadlineStatus: taskView.deadlineStatus,
-      deadlineDueAtMs: taskView.task.deadline?.dueAtMs ?? null,
-      recurringPeriod: taskView.task.recurring?.period ?? null,
-      recurringTargetMinutes: taskView.task.recurring?.targetMinutes ?? null
+      weeklyAverageLabel: formatMinutes(taskView.weeklyAverageMinutes)
     }))
   };
 }
@@ -243,16 +193,13 @@ export function buildSettingsState(runtime: PluginRuntime): SettingsState {
     boundaryTimeText: formatBoundaryTime(preferences.boundaryMinuteOfDay),
     weekStartsOn: preferences.weekStartsOn,
     refreshIntervalMs: preferences.refreshIntervalMs,
-    refreshIntervalSeconds: Math.floor(preferences.refreshIntervalMs / 1_000),
-    alertCheckIntervalMs: preferences.alertCheckIntervalMs,
-    alertCheckIntervalSeconds: Math.floor(preferences.alertCheckIntervalMs / 1_000)
+    refreshIntervalSeconds: Math.floor(preferences.refreshIntervalMs / 1_000)
   };
 }
 
 export class PluginUiBridge {
   private lastSnapshot: PluginUiSnapshot;
   private lastPeriodicRefresh: RuntimePeriodicRefresh | null = null;
-  private lastAlertEvents: RuntimeAlertEvent[] = [];
   private lastPanelOpenRequest: PanelOpenRequest | null = null;
 
   constructor(private readonly runtime: PluginRuntime, nowMs = Date.now()) {
@@ -263,14 +210,14 @@ export class PluginUiBridge {
     return this.refreshSnapshot(nowMs);
   }
 
-  runPeriodicRefresh(nowMs: number): PluginUiSnapshot {
-    this.lastPeriodicRefresh = this.runtime.runPeriodicRefresh(nowMs);
+  reloadPersistedState(persistedState: unknown, nowMs: number): PluginUiSnapshot {
+    this.runtime.reload(persistedState);
     return this.refreshSnapshot(nowMs);
   }
 
-  runAlertCheck(nowMs: number): RuntimeAlertEvent[] {
-    this.lastAlertEvents = this.runtime.runAlertCheck(nowMs);
-    return [...this.lastAlertEvents];
+  runPeriodicRefresh(nowMs: number): PluginUiSnapshot {
+    this.lastPeriodicRefresh = this.runtime.runPeriodicRefresh(nowMs);
+    return this.refreshSnapshot(nowMs);
   }
 
   getSnapshot(): PluginUiSnapshot {
@@ -283,10 +230,6 @@ export class PluginUiBridge {
 
   getLastPeriodicRefresh(): RuntimePeriodicRefresh | null {
     return this.lastPeriodicRefresh;
-  }
-
-  getLastAlertEvents(): RuntimeAlertEvent[] {
-    return [...this.lastAlertEvents];
   }
 
   getLastPanelOpenRequest(): PanelOpenRequest | null {
@@ -364,20 +307,10 @@ export class PluginUiBridge {
       };
     }
 
-    const alertCheckIntervalMs = parseIntervalSecondsText(draft.alertCheckIntervalSecondsText);
-    if (alertCheckIntervalMs === null) {
-      return {
-        ok: false,
-        reason: "invalid-alert-check-interval",
-        settings: this.getSettingsState()
-      };
-    }
-
     this.runtime.updatePreferences({
       boundaryMinuteOfDay,
       weekStartsOn: draft.weekStartsOn,
-      refreshIntervalMs,
-      alertCheckIntervalMs
+      refreshIntervalMs
     });
     this.refreshSnapshot(nowMs);
 
@@ -389,25 +322,9 @@ export class PluginUiBridge {
   }
 
   createTaskFromDraft(draft: TaskDraftInput, nowMs: number): TaskDraftMutationResult {
-    const deadline = parseDeadlineText(draft.deadlineText);
-    if (draft.deadlineText.trim().length > 0 && deadline === null) {
-      return { ok: false, reason: "invalid-deadline" };
-    }
-
-    const recurring = normalizeRecurringDraft(
-      draft.recurringPeriod,
-      draft.recurringTargetMinutes,
-      "create"
-    );
-    if (draft.recurringPeriod.trim().length > 0 && recurring === null) {
-      return { ok: false, reason: "invalid-recurring" };
-    }
-
     const result = this.createTask(
       {
-        title: draft.title,
-        ...(deadline === null ? {} : { deadline: { dueAtMs: deadline } }),
-        ...(recurring === undefined ? {} : { recurring })
+        title: draft.title
       },
       nowMs
     );
@@ -419,26 +336,10 @@ export class PluginUiBridge {
   }
 
   updateTaskFromDraft(taskId: TaskId, draft: TaskDraftInput, nowMs: number): TaskDraftMutationResult {
-    const deadline = parseDeadlineText(draft.deadlineText);
-    if (draft.deadlineText.trim().length > 0 && deadline === null) {
-      return { ok: false, reason: "invalid-deadline" };
-    }
-
-    const recurring = normalizeRecurringDraft(
-      draft.recurringPeriod,
-      draft.recurringTargetMinutes,
-      "update"
-    );
-    if (draft.recurringPeriod.trim().length > 0 && recurring === null) {
-      return { ok: false, reason: "invalid-recurring" };
-    }
-
     const result = this.updateTask(
       taskId,
       {
-        title: draft.title,
-        deadline: deadline === null ? null : { dueAtMs: deadline },
-        recurring
+        title: draft.title
       },
       nowMs
     );

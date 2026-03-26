@@ -1,8 +1,10 @@
 import QtQuick 2.15
+import qs.Commons
 
 Item {
     id: root
 
+    property var pluginApi: null
     property var uiBridge: null
     property var runtimeBridge: null
     property var snapshot: ({
@@ -25,24 +27,40 @@ Item {
     property string formError: ""
     property string editingTaskId: ""
     property string draftTitle: ""
-    property string draftDeadlineText: ""
-    property string draftRecurringPeriod: ""
-    property int draftRecurringTargetMinutes: 0
+    property string panelSearchQuery: ""
 
-    implicitWidth: 420
-    implicitHeight: 640
+    readonly property var geometryPlaceholder: panelContainer
+    readonly property bool allowAttach: true
+    property real contentPreferredWidth: 420
+    property real contentPreferredHeight: 640
 
-    readonly property int spacingUnit: 12
-    readonly property color pageColor: "#111318"
-    readonly property color cardColor: "#181c22"
-    readonly property color borderColor: "#2a313b"
-    readonly property color titleColor: "#f4f6fb"
-    readonly property color bodyColor: "#d7dce6"
-    readonly property color mutedColor: "#9ea8ba"
-    readonly property color accentColor: "#5aa9ff"
-    readonly property color successColor: "#56c288"
-    readonly property color warningColor: "#f3b562"
-    readonly property color dangerColor: "#ff7a7a"
+    implicitWidth: contentPreferredWidth
+    implicitHeight: contentPreferredHeight
+    anchors.fill: parent
+
+    readonly property int microSpacing: Math.max(2, Math.round(Style.marginM / 2))
+    readonly property int compactSpacing: Style.marginM
+    readonly property int controlGap: Style.marginM
+    readonly property int spacingUnit: Style.marginL
+    readonly property int fieldHeight: Style.barHeight
+    readonly property int controlRadius: Math.max(Style.radiusL, Math.round(root.fieldHeight / 2))
+    readonly property int surfaceRadius: Style.radiusL + 4
+    readonly property color pageColor: Color.mSurface
+    readonly property color cardColor: Color.mSurfaceVariant
+    readonly property color inputFillColor: Color.mSurface
+    readonly property color borderColor: Style.capsuleBorderColor
+    readonly property color titleColor: Color.mOnSurface
+    readonly property color bodyColor: Color.mOnSurface
+    readonly property color mutedColor: Color.mOnSurfaceVariant
+    readonly property color accentColor: Color.mPrimary
+    readonly property color accentPressedColor: Color.mHover
+    readonly property color accentTextColor: Color.mOnSurface
+    readonly property color successColor: Color.mPrimary
+    readonly property color dangerColor: Color.mHover
+    readonly property color neutralButtonColor: Color.mSurface
+    readonly property color neutralButtonPressedColor: Color.mSurfaceVariant
+    readonly property color dividerColor: Qt.alpha(root.borderColor, 0.75)
+    readonly property bool canSubmitDraft: String(root.draftTitle).trim().length > 0
 
     function syncSnapshot(nextSnapshot) {
         if (nextSnapshot) {
@@ -60,16 +78,28 @@ Item {
 
     function getRuntimeBridge() {
         var mainInstance = root.getPluginMainInstance()
-        if (root.runtimeBridge) {
-            return root.runtimeBridge
-        }
 
-        if (root.uiBridge) {
-            return root.uiBridge
+        if (mainInstance && mainInstance.getSnapshot && mainInstance.createTaskFromDraft) {
+            return mainInstance
         }
 
         if (mainInstance && mainInstance.runtimeBridge) {
             return mainInstance.runtimeBridge
+        }
+
+        if (mainInstance && mainInstance.ensureSharedRuntimeBridge) {
+            var ensuredBridge = mainInstance.ensureSharedRuntimeBridge()
+            if (ensuredBridge) {
+                return ensuredBridge
+            }
+        }
+
+        if (root.runtimeBridge) {
+            return root.runtimeBridge
+        }
+
+        if (root.uiBridge && root.uiBridge.getSnapshot && root.uiBridge.createTaskFromDraft) {
+            return root.uiBridge
         }
 
         return null
@@ -78,8 +108,11 @@ Item {
     function refreshFromBridge(nowMs) {
         var bridge = root.getRuntimeBridge()
         if (bridge && bridge.runPeriodicRefresh) {
-            root.syncSnapshot(bridge.runPeriodicRefresh(nowMs))
-            return root.snapshot
+            bridge.runPeriodicRefresh(nowMs)
+            if (bridge.getSnapshot) {
+                root.syncSnapshot(bridge.getSnapshot())
+                return root.snapshot
+            }
         }
 
         if (bridge && bridge.getSnapshot) {
@@ -106,11 +139,24 @@ Item {
 
     function getTaskDraft() {
         return {
-            "title": root.draftTitle,
-            "deadlineText": root.draftDeadlineText,
-            "recurringPeriod": root.draftRecurringPeriod,
-            "recurringTargetMinutes": root.draftRecurringTargetMinutes
+            "title": root.draftTitle
         }
+    }
+
+    function getFilteredTasks() {
+        var panelState = root.getPanelState()
+        var tasks = panelState.tasks || []
+        var query = String(root.panelSearchQuery).trim().toLowerCase()
+        if (query.length === 0) {
+            return tasks
+        }
+
+        return tasks.filter(function(task) {
+            if (!task || task.title === undefined || task.title === null) {
+                return false
+            }
+            return String(task.title).toLowerCase().indexOf(query) !== -1
+        })
     }
 
     function applyMutationResult(result) {
@@ -197,28 +243,34 @@ Item {
     function clearDraft() {
         root.editingTaskId = ""
         root.draftTitle = ""
-        root.draftDeadlineText = ""
-        root.draftRecurringPeriod = ""
-        root.draftRecurringTargetMinutes = 0
     }
 
     function beginEdit(taskData) {
         root.editingTaskId = taskData.id
         root.draftTitle = taskData.title
-        root.draftDeadlineText = taskData.deadlineDueAtMs === null ? "" : String(taskData.deadlineDueAtMs)
-        root.draftRecurringPeriod = taskData.recurringPeriod === null ? "" : taskData.recurringPeriod
-        root.draftRecurringTargetMinutes = taskData.recurringTargetMinutes === null ? 0 : taskData.recurringTargetMinutes
     }
 
     function submitDraft() {
         root.submitCreateOrUpdate()
     }
 
+    onVisibleChanged: {
+        if (visible) {
+            root.refreshFromBridge(Date.now())
+        }
+    }
+
+    onRuntimeBridgeChanged: root.refreshFromBridge(Date.now())
+    onUiBridgeChanged: root.refreshFromBridge(Date.now())
+
     Component.onCompleted: root.refreshFromBridge(Date.now())
 
     Rectangle {
+        id: panelContainer
         anchors.fill: parent
         color: root.pageColor
+        radius: root.surfaceRadius
+        clip: true
     }
 
     Flickable {
@@ -235,49 +287,93 @@ Item {
 
             Rectangle {
                 width: parent.width
-                height: 68
-                radius: 10
+                implicitHeight: activeSummaryColumn.implicitHeight + (root.spacingUnit * 2)
+                radius: root.surfaceRadius
                 color: root.cardColor
-                border.width: 1
+                border.width: Style.capsuleBorderWidth
                 border.color: root.borderColor
 
                 Column {
+                    id: activeSummaryColumn
                     anchors.fill: parent
                     anchors.margins: root.spacingUnit
-                    spacing: 4
+                    spacing: root.compactSpacing
 
                     Text {
-                        text: root.getPanelState().activeTaskTitle
-                        color: root.titleColor
-                        font.pixelSize: 16
-                        font.bold: true
-                        elide: Text.ElideRight
+                        text: "Active task"
+                        color: root.mutedColor
+                        font.pixelSize: 12
                     }
 
                     Row {
-                        spacing: 8
+                        width: parent.width
+                        spacing: root.controlGap
 
                         Text {
-                            text: root.getPanelState().canStopActiveTimer ? "Running" : "Stopped"
-                            color: root.getPanelState().canStopActiveTimer ? root.successColor : root.mutedColor
-                            font.pixelSize: 12
+                            width: parent.width - activeStateBadge.width - parent.spacing
+                            text: root.getPanelState().activeTaskTitle
+                            color: root.titleColor
+                            font.pixelSize: 16
                             font.bold: true
+                            elide: Text.ElideRight
                         }
 
-                        Text {
-                            text: root.getPanelState().canStopActiveTimer ? root.getPanelState().activeElapsedLabel : "0m"
-                            color: root.bodyColor
-                            font.pixelSize: 12
+                        Rectangle {
+                            id: activeStateBadge
+                            width: Math.max(84, activeStateText.implicitWidth + (root.compactSpacing * 2))
+                            height: Style.baseWidgetSize
+                            radius: root.controlRadius
+                            color: root.getPanelState().canStopActiveTimer
+                                ? (activeStopMouseArea.pressed ? root.neutralButtonPressedColor : root.neutralButtonColor)
+                                : root.inputFillColor
+                            border.width: Style.capsuleBorderWidth
+                            border.color: root.getPanelState().canStopActiveTimer ? root.dangerColor : root.borderColor
+
+                            Text {
+                                id: activeStateText
+                                anchors.centerIn: parent
+                                text: root.getPanelState().canStopActiveTimer ? "Stop" : "Stopped"
+                                color: root.getPanelState().canStopActiveTimer ? root.dangerColor : root.mutedColor
+                                font.pixelSize: 12
+                                font.bold: true
+                            }
+
+                            MouseArea {
+                                id: activeStopMouseArea
+                                anchors.fill: parent
+                                enabled: root.getPanelState().canStopActiveTimer
+                                hoverEnabled: true
+                                cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                                onClicked: root.stopActiveTask()
+                            }
                         }
+                    }
+
+                    Text {
+                        width: parent.width
+                        wrapMode: Text.WordWrap
+                        text: root.getPanelState().canStopActiveTimer
+                            ? ("Elapsed " + root.getPanelState().activeElapsedLabel)
+                            : "Start a task below to begin tracking time in this session."
+                        color: root.getPanelState().canStopActiveTimer ? root.bodyColor : root.mutedColor
+                        font.pixelSize: 12
                     }
                 }
             }
 
             Rectangle {
                 width: parent.width
-                radius: 10
+                height: 1
+                radius: 1
+                color: root.dividerColor
+                opacity: 0.45
+            }
+
+            Rectangle {
+                width: parent.width
+                radius: root.surfaceRadius
                 color: root.cardColor
-                border.width: 1
+                border.width: Style.capsuleBorderWidth
                 border.color: root.borderColor
                 implicitHeight: draftColumn.implicitHeight + (root.spacingUnit * 2)
 
@@ -285,7 +381,7 @@ Item {
                     id: draftColumn
                     anchors.fill: parent
                     anchors.margins: root.spacingUnit
-                    spacing: 8
+                    spacing: root.controlGap
 
                     Text {
                         text: root.editingTaskId.length > 0 ? "Edit task" : "Create task"
@@ -294,73 +390,78 @@ Item {
                         font.bold: true
                     }
 
-                    TextInput {
-                        id: titleInput
+                    Column {
                         width: parent.width
-                        color: root.bodyColor
-                        selectedTextColor: root.pageColor
-                        selectionColor: root.accentColor
-                        text: root.draftTitle
-                        font.pixelSize: 13
-                        onTextChanged: root.draftTitle = text
-                    }
+                        spacing: root.compactSpacing
 
-                    TextInput {
-                        width: parent.width
-                        color: root.bodyColor
-                        selectedTextColor: root.pageColor
-                        selectionColor: root.accentColor
-                        text: root.draftDeadlineText
-                        font.pixelSize: 13
-                        onTextChanged: root.draftDeadlineText = text
-                    }
-
-                    Row {
-                        width: parent.width
-                        spacing: 8
-
-                        TextInput {
-                            width: Math.max(120, (parent.width - parent.spacing) / 2)
-                            color: root.bodyColor
-                            selectedTextColor: root.pageColor
-                            selectionColor: root.accentColor
-                            text: root.draftRecurringPeriod
-                            font.pixelSize: 13
-                            onTextChanged: root.draftRecurringPeriod = text
+                        Text {
+                            text: "Task title"
+                            color: root.titleColor
+                            font.pixelSize: 12
+                            font.bold: true
                         }
 
-                        TextInput {
-                            width: Math.max(80, (parent.width - parent.spacing) / 2)
-                            color: root.bodyColor
-                            selectedTextColor: root.pageColor
-                            selectionColor: root.accentColor
-                            text: root.draftRecurringTargetMinutes === 0 ? "" : String(root.draftRecurringTargetMinutes)
-                            font.pixelSize: 13
-                            inputMethodHints: Qt.ImhDigitsOnly
-                            onTextChanged: root.draftRecurringTargetMinutes = text.length === 0 ? 0 : Number(text)
+                        Rectangle {
+                            width: parent.width
+                            height: root.fieldHeight
+                            radius: root.controlRadius
+                            color: root.inputFillColor
+                            border.width: Style.capsuleBorderWidth
+                            border.color: titleInput.activeFocus ? root.accentColor : root.borderColor
+
+                            TextInput {
+                                id: titleInput
+                                anchors.fill: parent
+                                anchors.margins: root.compactSpacing
+                                color: root.bodyColor
+                                selectedTextColor: root.accentTextColor
+                                selectionColor: root.accentColor
+                                text: root.draftTitle
+                                font.pixelSize: 13
+                                onTextChanged: root.draftTitle = text
+                            }
+
+                            Text {
+                                anchors.left: parent.left
+                                anchors.leftMargin: root.compactSpacing
+                                anchors.verticalCenter: parent.verticalCenter
+                                visible: titleInput.text.length === 0
+                                text: "Write a task title"
+                                color: root.mutedColor
+                                font.pixelSize: 13
+                            }
                         }
                     }
 
                     Text {
                         visible: root.formError.length > 0
+                        width: parent.width
+                        wrapMode: Text.WordWrap
                         text: root.formError
                         color: root.dangerColor
                         font.pixelSize: 12
                     }
 
-                    Row {
-                        spacing: 8
+                    Flow {
+                        width: parent.width
+                        spacing: root.controlGap
 
                         Rectangle {
-                            width: 88
-                            height: 30
-                            radius: 6
-                            color: submitMouseArea.pressed ? "#478bdd" : root.accentColor
+                            width: 104
+                            height: Style.baseWidgetSize
+                            radius: root.controlRadius
+                            color: root.canSubmitDraft
+                                ? (submitMouseArea.pressed
+                                    ? root.accentPressedColor
+                                    : (submitMouseArea.containsMouse ? Qt.lighter(root.accentColor, 1.08) : root.accentColor))
+                                : root.neutralButtonPressedColor
+                            border.width: Style.capsuleBorderWidth
+                            border.color: root.canSubmitDraft ? root.accentColor : root.borderColor
 
                             Text {
                                 anchors.centerIn: parent
                                 text: root.editingTaskId.length > 0 ? "Save" : "Create"
-                                color: root.pageColor
+                                color: root.canSubmitDraft ? root.accentTextColor : root.mutedColor
                                 font.pixelSize: 12
                                 font.bold: true
                             }
@@ -368,16 +469,21 @@ Item {
                             MouseArea {
                                 id: submitMouseArea
                                 anchors.fill: parent
+                                enabled: root.canSubmitDraft
+                                hoverEnabled: true
+                                cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
                                 onClicked: root.submitDraft()
                             }
                         }
 
                         Rectangle {
                             visible: root.editingTaskId.length > 0
-                            width: visible ? 88 : 0
-                            height: 30
-                            radius: 6
-                            color: cancelMouseArea.pressed ? "#252b34" : "#20252d"
+                            width: visible ? 96 : 0
+                            height: Style.baseWidgetSize
+                            radius: root.controlRadius
+                            color: cancelMouseArea.pressed ? root.neutralButtonPressedColor : root.neutralButtonColor
+                            border.width: Style.capsuleBorderWidth
+                            border.color: root.borderColor
 
                             Text {
                                 anchors.centerIn: parent
@@ -389,41 +495,88 @@ Item {
                             MouseArea {
                                 id: cancelMouseArea
                                 anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
                                 onClicked: root.clearDraft()
                             }
                         }
 
-                        Rectangle {
-                            visible: root.getPanelState().canStopActiveTimer
-                            width: visible ? 88 : 0
-                            height: 30
-                            radius: 6
-                            color: stopMouseArea.pressed ? "#a85353" : root.dangerColor
-
-                            Text {
-                                anchors.centerIn: parent
-                                text: "Stop"
-                                color: root.pageColor
-                                font.pixelSize: 12
-                                font.bold: true
-                            }
-
-                            MouseArea {
-                                id: stopMouseArea
-                                anchors.fill: parent
-                                onClicked: root.stopActiveTask()
-                            }
-                        }
                     }
                 }
             }
 
-            Column {
+            Rectangle {
                 width: parent.width
-                spacing: 8
+                height: 1
+                radius: 1
+                color: root.dividerColor
+                opacity: 0.45
+            }
+
+            Column {
+                id: tasksSection
+                width: parent.width
+                spacing: root.controlGap
+
+                Text {
+                    text: "Tasks"
+                    color: root.titleColor
+                    font.pixelSize: 15
+                    font.bold: true
+                }
+
+                Rectangle {
+                    width: parent.width
+                    height: root.fieldHeight
+                    radius: root.controlRadius
+                    color: root.inputFillColor
+                    border.width: Style.capsuleBorderWidth
+                    border.color: searchInput.activeFocus ? root.accentColor : root.borderColor
+
+                    TextInput {
+                        id: searchInput
+                        anchors.fill: parent
+                        anchors.margins: root.compactSpacing
+                        color: root.bodyColor
+                        selectedTextColor: root.accentTextColor
+                        selectionColor: root.accentColor
+                        text: root.panelSearchQuery
+                        font.pixelSize: 13
+                        onTextChanged: root.panelSearchQuery = text
+                    }
+
+                    Text {
+                        anchors.left: parent.left
+                        anchors.leftMargin: root.compactSpacing
+                        anchors.verticalCenter: parent.verticalCenter
+                        visible: searchInput.text.length === 0
+                        text: "Search tasks by title"
+                        color: root.mutedColor
+                        font.pixelSize: 13
+                    }
+                }
+
+                Text {
+                    visible: root.getPanelState().tasks.length === 0
+                    width: parent.width
+                    wrapMode: Text.WordWrap
+                    text: "No tasks yet. Create one above to start tracking time."
+                    color: root.mutedColor
+                    font.pixelSize: 12
+                }
+
+                Text {
+                    visible: root.getPanelState().tasks.length > 0 && taskRepeater.count === 0
+                    width: parent.width
+                    wrapMode: Text.WordWrap
+                    text: "No tasks match your search."
+                    color: root.mutedColor
+                    font.pixelSize: 12
+                }
 
                 Repeater {
-                    model: root.getPanelState().tasks
+                    id: taskRepeater
+                    model: root.getFilteredTasks()
 
                     delegate: Rectangle {
                         required property var modelData
@@ -431,9 +584,9 @@ Item {
                         readonly property var taskData: modelData
 
                         width: panelColumn.width
-                        radius: 10
+                        radius: root.surfaceRadius
                         color: root.cardColor
-                        border.width: 1
+                        border.width: Style.capsuleBorderWidth
                         border.color: taskData.isActive ? root.accentColor : root.borderColor
                         implicitHeight: taskColumn.implicitHeight + (root.spacingUnit * 2)
 
@@ -441,14 +594,14 @@ Item {
                             id: taskColumn
                             anchors.fill: parent
                             anchors.margins: root.spacingUnit
-                            spacing: 8
+                            spacing: root.controlGap
 
                             Row {
                                 width: parent.width
-                                spacing: 8
+                                spacing: root.controlGap
 
                                 Text {
-                                    width: parent.width - 88
+                                    width: parent.width - taskStateBadge.width - parent.spacing
                                     text: taskData.title
                                     color: root.titleColor
                                     font.pixelSize: 14
@@ -456,72 +609,139 @@ Item {
                                     elide: Text.ElideRight
                                 }
 
-                                Text {
-                                    text: taskData.isCompleted ? "Done" : (taskData.isActive ? "Active" : "Ready")
-                                    color: taskData.isCompleted ? root.mutedColor : (taskData.isActive ? root.successColor : root.bodyColor)
-                                    font.pixelSize: 12
-                                    font.bold: true
+                                Rectangle {
+                                    id: taskStateBadge
+                                    width: taskStateText.implicitWidth + (root.compactSpacing * 2)
+                                    height: Style.baseWidgetSize
+                                    radius: root.controlRadius
+                                    color: root.inputFillColor
+                                    border.width: Style.capsuleBorderWidth
+                                    border.color: taskData.isActive ? root.successColor : (taskData.isCompleted ? root.borderColor : root.accentColor)
+
+                                    Text {
+                                        id: taskStateText
+                                        anchors.centerIn: parent
+                                        text: taskData.isCompleted ? "Done" : (taskData.isActive ? "Activated" : "Ready")
+                                        color: taskData.isCompleted ? root.mutedColor : (taskData.isActive ? root.successColor : root.bodyColor)
+                                        font.pixelSize: 12
+                                        font.bold: true
+                                    }
                                 }
                             }
 
-                            Row {
-                                spacing: 12
-
-                                Text {
-                                    text: "Today " + taskData.todayTrackedLabel
-                                    color: root.bodyColor
-                                    font.pixelSize: 12
-                                }
-
-                                Text {
-                                    text: "Weekly avg " + taskData.weeklyAverageLabel
-                                    color: root.bodyColor
-                                    font.pixelSize: 12
-                                }
-                            }
-
-                            Text {
-                                text: taskData.deadlineDueAtMs === null ? "Deadline none" : ("Deadline " + String(taskData.deadlineDueAtMs))
-                                color: taskData.deadlineStatus === "overdue" ? root.warningColor : root.mutedColor
-                                font.pixelSize: 12
-                            }
-
-                            Text {
-                                text: taskData.recurringPeriod === null ? "Recurring none" : ("Recurring " + taskData.recurringPeriod + " / " + String(taskData.recurringTargetMinutes || 0) + "m")
-                                color: root.mutedColor
-                                font.pixelSize: 12
-                            }
-
-                            Row {
-                                spacing: 8
+                            Flow {
+                                id: taskMetaFlow
+                                width: parent.width
+                                spacing: root.controlGap
 
                                 Rectangle {
-                                    width: 72
-                                    height: 28
-                                    radius: 6
-                                    color: actionMouseArea.pressed ? "#478bdd" : root.accentColor
+                                    width: Math.max(120, (taskMetaFlow.width - taskMetaFlow.spacing) / 2)
+                                    radius: root.controlRadius
+                                    color: root.inputFillColor
+                                    border.width: Style.capsuleBorderWidth
+                                    border.color: root.borderColor
+                                    implicitHeight: todayMetaColumn.implicitHeight + (root.compactSpacing * 2)
 
-                                Text {
-                                    anchors.centerIn: parent
-                                    text: taskData.isActive ? "Active" : (root.getPanelState().canStopActiveTimer ? "Switch" : "Start")
-                                    color: root.pageColor
-                                    font.pixelSize: 12
-                                    font.bold: true
+                                    Column {
+                                        id: todayMetaColumn
+                                        anchors.fill: parent
+                                        anchors.margins: root.compactSpacing
+                                        spacing: root.microSpacing
+
+                                        Text {
+                                            text: "Today"
+                                            color: root.mutedColor
+                                            font.pixelSize: 12
+                                        }
+
+                                        Text {
+                                            text: taskData.todayTrackedLabel
+                                            color: root.bodyColor
+                                            font.pixelSize: 13
+                                            font.bold: true
+                                        }
+                                    }
+                                }
+
+                                Rectangle {
+                                    width: Math.max(120, (taskMetaFlow.width - taskMetaFlow.spacing) / 2)
+                                    radius: root.controlRadius
+                                    color: root.inputFillColor
+                                    border.width: Style.capsuleBorderWidth
+                                    border.color: root.borderColor
+                                    implicitHeight: weeklyMetaColumn.implicitHeight + (root.compactSpacing * 2)
+
+                                    Column {
+                                        id: weeklyMetaColumn
+                                        anchors.fill: parent
+                                        anchors.margins: root.compactSpacing
+                                        spacing: root.microSpacing
+
+                                        Text {
+                                            text: "Weekly avg"
+                                            color: root.mutedColor
+                                            font.pixelSize: 12
+                                        }
+
+                                        Text {
+                                            text: taskData.weeklyAverageLabel
+                                            color: root.bodyColor
+                                            font.pixelSize: 13
+                                            font.bold: true
+                                        }
+                                    }
+                                }
+                            }
+
+                            Rectangle {
+                                width: parent.width
+                                height: 1
+                                radius: 1
+                                color: root.dividerColor
+                                opacity: 0.35
+                            }
+
+                            Flow {
+                                width: parent.width
+                                spacing: root.controlGap
+
+                                Rectangle {
+                                    width: 80
+                                    height: Style.baseWidgetSize
+                                    radius: root.controlRadius
+                                    color: actionMouseArea.enabled
+                                        ? (actionMouseArea.pressed ? root.accentPressedColor : root.accentColor)
+                                        : root.neutralButtonColor
+                                    border.width: Style.capsuleBorderWidth
+                                    border.color: actionMouseArea.enabled ? root.accentColor : root.borderColor
+
+                                    Text {
+                                        anchors.centerIn: parent
+                                        text: taskData.isActive ? "Activated" : (root.getPanelState().canStopActiveTimer ? "Switch" : "Start")
+                                        color: actionMouseArea.enabled ? root.accentTextColor : root.mutedColor
+                                        font.pixelSize: 12
+                                        font.bold: true
                                     }
 
                                     MouseArea {
                                         id: actionMouseArea
                                         anchors.fill: parent
                                         enabled: !taskData.isCompleted && !taskData.isActive
+                                        hoverEnabled: true
+                                        cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
                                         onClicked: root.startOrSwitchTask(taskData.id)
                                     }
                                 }
 
                                 Rectangle {
-                                    width: 72
-                                    height: 28
-                                    radius: 6
-                                    color: editMouseArea.pressed ? "#252b34" : "#20252d"
+                                    width: 80
+                                    height: Style.baseWidgetSize
+                                    radius: root.controlRadius
+                                    color: editMouseArea.pressed
+                                        ? root.neutralButtonPressedColor
+                                        : (editMouseArea.containsMouse ? root.inputFillColor : root.neutralButtonColor)
+                                    border.width: Style.capsuleBorderWidth
+                                    border.color: root.borderColor
 
                                     Text {
                                         anchors.centerIn: parent
@@ -533,47 +753,34 @@ Item {
                                     MouseArea {
                                         id: editMouseArea
                                         anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
                                         onClicked: root.beginEdit(taskData)
                                     }
                                 }
 
                                 Rectangle {
-                                    width: 90
-                                    height: 28
-                                    radius: 6
-                                    color: completeMouseArea.pressed ? "#47886f" : root.successColor
-
-                                    Text {
-                                        anchors.centerIn: parent
-                                        text: "Complete"
-                                        color: root.pageColor
-                                        font.pixelSize: 12
-                                    }
-
-                                    MouseArea {
-                                        id: completeMouseArea
-                                        anchors.fill: parent
-                                        enabled: !taskData.isCompleted
-                                        onClicked: root.completeExistingTask(taskData.id)
-                                    }
-                                }
-
-                                Rectangle {
-                                    width: 72
-                                    height: 28
-                                    radius: 6
-                                    color: deleteMouseArea.pressed ? "#a85353" : root.dangerColor
+                                    width: 80
+                                    height: Style.baseWidgetSize
+                                    radius: root.controlRadius
+                                    color: deleteMouseArea.pressed
+                                        ? root.neutralButtonPressedColor
+                                        : (deleteMouseArea.containsMouse ? root.inputFillColor : root.neutralButtonColor)
+                                    border.width: Style.capsuleBorderWidth
+                                    border.color: root.dangerColor
 
                                     Text {
                                         anchors.centerIn: parent
                                         text: "Delete"
-                                        color: root.pageColor
+                                        color: root.dangerColor
                                         font.pixelSize: 12
                                     }
 
                                     MouseArea {
                                         id: deleteMouseArea
                                         anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
                                         onClicked: root.deleteExistingTask(taskData.id)
                                     }
                                 }

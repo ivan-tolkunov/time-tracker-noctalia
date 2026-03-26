@@ -33,7 +33,7 @@ function extractFunctionSource(source: string, functionName: string): string {
 }
 
 describe("QML entrypoint bridge contract", () => {
-  it("keeps bar, panel, and settings on the same shared main-instance runtime bridge path", () => {
+  it("keeps bar, panel, and settings on the shared bridge path with main-instance QML fallback", () => {
     const entrypoints = [
       { name: "BarWidget.qml", source: barWidgetSource },
       { name: "Panel.qml", source: panelSource },
@@ -52,6 +52,17 @@ describe("QML entrypoint bridge contract", () => {
     const runtimeBridgeResolver = entrypoints.map(({ source }) => extractFunctionSource(source, "getRuntimeBridge"));
 
     expect(new Set(pluginMainInstanceResolver)).toEqual(new Set([pluginMainInstanceResolver[0]]));
-    expect(new Set(runtimeBridgeResolver)).toEqual(new Set([runtimeBridgeResolver[0]]));
+
+    for (const resolver of runtimeBridgeResolver) {
+      expect(resolver).toContain("if (root.runtimeBridge)");
+      expect(resolver).toContain("if (root.uiBridge)");
+      expect(resolver).toContain("if (mainInstance && mainInstance.runtimeBridge)");
+      expect(resolver).toContain("if (mainInstance && mainInstance.ensureSharedRuntimeBridge)");
+      expect(resolver).toContain("return ensuredBridge");
+    }
+
+    expect(barWidgetSource).toContain("if (mainInstance && mainInstance.getSnapshot && mainInstance.runPeriodicRefresh)");
+    expect(panelSource).toContain("if (mainInstance && mainInstance.getSnapshot && mainInstance.createTaskFromDraft)");
+    expect(settingsSource).toContain("if (mainInstance && mainInstance.updateSettingsFromDraft)");
   });
 });

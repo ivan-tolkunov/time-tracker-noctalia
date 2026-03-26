@@ -5,8 +5,7 @@ import { PluginRuntime, PluginUiBridge } from "../../src/runtime/index.js";
 const defaultPreferences = {
   boundaryMinuteOfDay: 0,
   weekStartsOn: 1,
-  refreshIntervalMs: 30_000,
-  alertCheckIntervalMs: 60_000
+  refreshIntervalMs: 30_000
 } as const;
 
 describe("plugin UI bridge", () => {
@@ -34,7 +33,6 @@ describe("plugin UI bridge", () => {
           taskId: "task-active",
           startMs: activeStartMs
         },
-        alertRecords: [],
         preferences: defaultPreferences
       },
       {
@@ -79,19 +77,13 @@ describe("plugin UI bridge", () => {
 
     const firstCreate = bridge.createTaskFromDraft(
       {
-        title: "Draft proposal",
-        deadlineText: String(Date.parse("2026-03-28T12:00:00.000Z")),
-        recurringPeriod: "weekly",
-        recurringTargetMinutes: 90
+        title: "Draft proposal"
       },
       t0
     );
     const secondCreate = bridge.createTaskFromDraft(
       {
-        title: "Review notes",
-        deadlineText: "",
-        recurringPeriod: "",
-        recurringTargetMinutes: 0
+        title: "Review notes"
       },
       t0
     );
@@ -99,24 +91,10 @@ describe("plugin UI bridge", () => {
     expect(firstCreate).toEqual({ ok: true, reason: null });
     expect(secondCreate).toEqual({ ok: true, reason: null });
 
-    const invalidDraft = bridge.createTaskFromDraft(
-      {
-        title: "Broken deadline",
-        deadlineText: "not-a-number",
-        recurringPeriod: "",
-        recurringTargetMinutes: 0
-      },
-      t0
-    );
-    expect(invalidDraft).toEqual({ ok: false, reason: "invalid-deadline" });
-
     const updated = bridge.updateTaskFromDraft(
       "task-1",
       {
-        title: "Draft launch proposal",
-        deadlineText: String(Date.parse("2026-03-29T12:00:00.000Z")),
-        recurringPeriod: "daily",
-        recurringTargetMinutes: 45
+        title: "Draft launch proposal"
       },
       t0
     );
@@ -144,11 +122,7 @@ describe("plugin UI bridge", () => {
         todayTrackedMinutes: 30,
         todayTrackedLabel: "30m",
         weeklyAverageMinutes: 30,
-        weeklyAverageLabel: "30m",
-        deadlineStatus: "none",
-        deadlineDueAtMs: null,
-        recurringPeriod: null,
-        recurringTargetMinutes: null
+        weeklyAverageLabel: "30m"
       }
     ]);
     expect(snapshot.bar).toEqual({
@@ -160,7 +134,7 @@ describe("plugin UI bridge", () => {
     });
   });
 
-  it("keeps bar and panel snapshots synchronized across refreshes and alert checks", () => {
+  it("keeps bar and panel snapshots synchronized across refreshes", () => {
     const startMs = Date.parse("2026-03-23T09:00:00.000Z");
     const firstRefreshMs = Date.parse("2026-03-23T09:45:00.000Z");
     const secondRefreshMs = Date.parse("2026-03-23T10:15:00.000Z");
@@ -172,9 +146,7 @@ describe("plugin UI bridge", () => {
           {
             id: "task-focus",
             title: "Focus block",
-            createdAtMs: Date.parse("2026-03-20T09:00:00.000Z"),
-            deadline: { dueAtMs: Date.parse("2026-03-22T09:00:00.000Z") },
-            recurring: { period: "weekly", targetMinutes: 180 }
+            createdAtMs: Date.parse("2026-03-20T09:00:00.000Z")
           }
         ],
         sessions: [],
@@ -183,7 +155,6 @@ describe("plugin UI bridge", () => {
           taskId: "task-focus",
           startMs
         },
-        alertRecords: [],
         preferences: defaultPreferences
       },
       {
@@ -196,7 +167,6 @@ describe("plugin UI bridge", () => {
     const bridge = new PluginUiBridge(runtime, firstRefreshMs);
     const firstSnapshot = bridge.initializeRuntime(firstRefreshMs);
     const secondSnapshot = bridge.runPeriodicRefresh(secondRefreshMs);
-    const alerts = bridge.runAlertCheck(secondRefreshMs);
     const panelOpenRequest = bridge.requestPanelOpen(secondRefreshMs);
 
     expect(firstSnapshot.bar.activeTaskId).toBe(firstSnapshot.panel.activeTaskId);
@@ -206,8 +176,45 @@ describe("plugin UI bridge", () => {
     expect(bridge.getLastPeriodicRefresh()).toMatchObject({ nowMs: secondRefreshMs });
     expect(panelOpenRequest).toEqual({ requested: true, requestedAtMs: secondRefreshMs });
     expect(bridge.getLastPanelOpenRequest()).toEqual(panelOpenRequest);
-    expect(alerts.map((event) => event.eventType).sort()).toEqual(["deadline-overdue", "recurring-missed"]);
-    expect(bridge.getLastAlertEvents()).toEqual(alerts);
+  });
+
+  it("reloads persisted sessions into the runtime-backed snapshot", () => {
+    const t0 = Date.parse("2026-03-25T08:00:00.000Z");
+    const t1 = Date.parse("2026-03-25T09:00:00.000Z");
+
+    const runtime = PluginRuntime.createEmpty({
+      createTaskId: () => "generated-task",
+      createSessionId: () => "generated-session",
+      now: () => t1
+    });
+    const bridge = new PluginUiBridge(runtime, t1);
+
+    const snapshot = bridge.reloadPersistedState(
+      {
+        version: 1,
+        tasks: [{ id: "task-a", title: "Write report", createdAtMs: t0 }],
+        sessions: [{ id: "session-a", taskId: "task-a", startMs: t0, endMs: t1 }],
+        activeTimer: null,
+        preferences: defaultPreferences
+      },
+      t1
+    );
+
+    expect(snapshot.panel.tasks).toEqual([
+      {
+        id: "task-a",
+        title: "Write report",
+        isActive: false,
+        isCompleted: false,
+        todayTrackedMinutes: 60,
+        todayTrackedLabel: "1h",
+        weeklyAverageMinutes: 60,
+        weeklyAverageLabel: "1h"
+      }
+    ]);
+    expect(runtime.getSessions()).toEqual([
+      { id: "session-a", taskId: "task-a", startMs: t0, endMs: t1 }
+    ]);
   });
 
   it("exposes settings state and updates runtime preferences from settings drafts", () => {
@@ -224,17 +231,14 @@ describe("plugin UI bridge", () => {
       boundaryTimeText: "00:00",
       weekStartsOn: 1,
       refreshIntervalMs: 30_000,
-      refreshIntervalSeconds: 30,
-      alertCheckIntervalMs: 60_000,
-      alertCheckIntervalSeconds: 60
+      refreshIntervalSeconds: 30
     });
 
     const updated = bridge.updateSettingsFromDraft(
       {
         boundaryTimeText: "04:30",
         weekStartsOn: 0,
-        refreshIntervalSecondsText: "45",
-        alertCheckIntervalSecondsText: "90"
+        refreshIntervalSecondsText: "45"
       },
       nowMs
     );
@@ -247,16 +251,13 @@ describe("plugin UI bridge", () => {
         boundaryTimeText: "04:30",
         weekStartsOn: 0,
         refreshIntervalMs: 45_000,
-        refreshIntervalSeconds: 45,
-        alertCheckIntervalMs: 90_000,
-        alertCheckIntervalSeconds: 90
+        refreshIntervalSeconds: 45
       }
     });
     expect(runtime.getPreferences()).toEqual({
       boundaryMinuteOfDay: 270,
       weekStartsOn: 0,
-      refreshIntervalMs: 45_000,
-      alertCheckIntervalMs: 90_000
+      refreshIntervalMs: 45_000
     });
   });
 
@@ -274,8 +275,7 @@ describe("plugin UI bridge", () => {
         {
           boundaryTimeText: "25:00",
           weekStartsOn: 1,
-          refreshIntervalSecondsText: "30",
-          alertCheckIntervalSecondsText: "60"
+          refreshIntervalSecondsText: "30"
         },
         nowMs
       )
@@ -287,9 +287,7 @@ describe("plugin UI bridge", () => {
         boundaryTimeText: "00:00",
         weekStartsOn: 1,
         refreshIntervalMs: 30_000,
-        refreshIntervalSeconds: 30,
-        alertCheckIntervalMs: 60_000,
-        alertCheckIntervalSeconds: 60
+        refreshIntervalSeconds: 30
       }
     });
 
@@ -298,8 +296,7 @@ describe("plugin UI bridge", () => {
         {
           boundaryTimeText: "04:00",
           weekStartsOn: 1,
-          refreshIntervalSecondsText: "0",
-          alertCheckIntervalSecondsText: "60"
+          refreshIntervalSecondsText: "0"
         },
         nowMs
       ).reason
